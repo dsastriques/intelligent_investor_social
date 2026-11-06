@@ -1,153 +1,184 @@
 # 03 — Deployment, infrastructure and operations (input for the devops skill)
 
-Serves NFR-01, NFR-02, NFR-04..NFR-08, NFR-10, NFR-12, FR-07.
+Version: **v0.2 (2026-11-06)**. v0.1 used a single EU VPS. v0.2 applies the owner's answer to Q-02: €50–200/month excluding LLM, managed cloud preferred, Hetzner for heavy batch work (NFR-10). Decisions: ADR-015 (hosting), ADR-007 (managed Postgres), ADR-013 (queue), ADR-018/ADR-019 (object storage, store publication), ADR-012 (price vendor), ADR-017 (email), ADR-020 (payments).
+
+Serves NFR-01, NFR-02, NFR-04..NFR-08, NFR-10, NFR-12, FR-07, FR-29.
 
 ## 1. Deployment components
 
+Two planes. The **serving plane** (Scaleway, managed, EU) holds all personal data and user traffic. The **batch plane** (Hetzner, EU) holds the collector and other heavy, public-data jobs. They share only Postgres (least-privilege roles) and object storage.
+
 ```mermaid
 flowchart TB
-  user([Browser]) --> cf[Cloudflare: DNS, TLS, WAF, rate limiting, Turnstile, static cache]
-  cf -->|Tunnel, no open inbound ports| cfd[cloudflared]
-  subgraph VPS[EU VPS prod - Debian 12, systemd]
-    cfd --> web[iip-web.service<br/>uvicorn x2-4]
-    web <--> appdb[(app.db)]
-    web --> mdb[(market.db)]
-    web -->|ro| store[(as-reported store)]
-    worker[iip-worker.service] <--> appdb
-    worker <--> mdb
-    worker -->|ro| store
-    worker <-->|unix socket| runner[iip-tool-runner.service<br/>sandboxed, no network]
-    runner -->|ro| mdb
-    timers[systemd timers: prices, plan reviews, reconcile, backups] --> worker
-    fdcfeed[fdc-feed.timer] --> store
-    fdcw[fdc-watch@sector.service x ~11] --> store
-    fdcb[fdc-backfill.service manual/quarterly] --> store
-    fdcf[fdc-ffiec.timer] --> store
-    ls[litestream.service] --> appdb
+  user([Browser]) --> cf[Cloudflare: DNS, TLS, WAF, rate limits, Turnstile, static cache]
+  subgraph SCW[Scaleway fr-par - serving plane, managed]
+    web[iip-web<br/>Serverless Container, min 1]
+    worker[iip-worker<br/>Serverless Container, min 1<br/>jobs, scheduler, LLM, email, webhooks]
+    runner[iip-tool-runner<br/>private Serverless Container, scale to 0<br/>no DB role, no secrets]
+    pg[(Managed PostgreSQL<br/>schemas app + market)]
+    os1[(Object Storage one-zone<br/>iip-store: published store + analysis snapshots)]
+    tem[Transactional Email]
+    cockpit[Cockpit logs/metrics]
+    reg[Container Registry + Secret Manager]
   end
-  ls --> obj[(EU object storage<br/>backups + raw zips)]
-  fdcb --> obj
-  worker --> email[(Email provider EU)]
+  subgraph HZ[Hetzner DE/FI - batch plane]
+    box[batch VM systemd:<br/>fdc backfill / feed / watch@sector / ffiec<br/>iip reconcile, fdc publish, pg_dump]
+    store[(as-reported store of record<br/>catalog.db + companies/*.sqlite)]
+    os2[(Hetzner Object Storage<br/>raw zips, export bundles, encrypted DB dumps)]
+  end
+  cf --> web
+  web <--> pg
+  web -->|ro, LRU cache| os1
+  worker <--> pg
+  worker -->|HTTPS + token| runner
+  runner -->|pre-signed GET| os1
+  worker --> tem
   worker --> llm[(LLM API)]
-  worker --> pv[(Price vendor)]
-  fdcfeed --> sec[(SEC)]
-  hc[(healthchecks.io)] -.-> timers
+  worker --> pv[(Price vendor: marketstack)]
+  worker --> pay[(Payment provider MoR)]
+  pay -->|signed webhooks| cf
+  box --> store
+  box -->|publish| os1
+  box -->|role iip_batch: std_*, filing_event| pg
+  box --> os2
+  box -->|nightly pg_dump, age-encrypted| os2
+  box --> sec[(SEC / FFIEC)]
+  hc[(healthchecks.io)] -.-> box
+  hc -.-> worker
 ```
 
 ## 2. Environments
 
 | Env | Where | Data | Purpose |
 |---|---|---|---|
-| dev | developer machine / Claude Code sandbox | `fdc export` seed bundle (~50 companies), synthetic users | development, unit/integration tests |
-| ci | GitHub Actions | fixtures only; **no SEC/vendor calls** (C-8) | lint, types, tests, e2e on seed |
-| staging | same VPS, separate Unix users, ports, DBs and hostname `staging.<domain>` behind Cloudflare Access (owner only) | seed bundle + anonymised copy option | release rehearsal, migration tests, e2e smoke |
-| prod | EU VPS | full store, real users | V1 |
+| dev | developer machine / Claude Code sandbox; Postgres via `testcontainers` or local | `fdc export` seed bundle (~50 companies), synthetic users | development, unit/integration tests |
+| ci | GitHub Actions + Postgres service container | fixtures only; **no SEC/vendor calls** (C-8) | lint, types, tests, e2e on seed |
+| staging | Scaleway namespace `iip-staging` (containers min-scale 0), database `iip_staging` on the prod instance (A-20), bucket prefix `staging/`, `staging.<domain>` behind Cloudflare Access (owner only); fake payment provider sandbox | seed bundle + published snapshot | release rehearsal, migration tests, e2e smoke |
+| prod | Scaleway `iip-prod` + Hetzner batch VM | full store, real users | V1 private beta |
 
-ASSUMPTION A-11: Pro runs on a **new** VPS, not the existing 1 GB server (which keeps running the screener/The Trader). Staging shares the prod VPS to save cost (ASSUMPTION A-20; a second small VPS is the upgrade path).
+The existing 1 GB screener server stays separate (A-11). The batch VM is new.
 
 ## 3. Compute choice (ADR-015)
 
-- **One dedicated EU VPS** with systemd services (same operating model the owner already uses), Python via `uv` into a venv per app, no containers required. Rationale: lowest cost and ops load for one developer; SQLite needs local disk; systemd gives sandboxing (runner) and restart policies.
-- **Proposed size (validated by M0):** 4 vCPU, 8 GB RAM, 160 GB+ SSD (e.g. Hetzner CPX31/CX-line in Falkenstein/Nuremberg/Helsinki, ≈ €15–20/month) plus a block volume for the store if M0 projects > 100 GB. The 1 GB server is too small for Arelle, uvicorn workers, runner and SQLite page cache together.
-- Containers (Docker/Podman) optional later for reproducibility; not required by any NFR.
+| Component | Where | Size (beta) | Why |
+|---|---|---|---|
+| `iip-web` | Scaleway Serverless Container, min 1, max 3 | 0.5 vCPU / 1 GB | managed restarts and scaling; no OS to patch (NFR-12) |
+| `iip-worker` | Serverless Container, min 1, max 2 (advisory-lock scheduler) | 0.5 vCPU / 1 GB | always-on jobs (ADR-013) |
+| `iip-tool-runner` | **private** Serverless Container, min 0, max 4, request timeout 30 s | 1 vCPU / 1 GB | isolation (NFR-09, 06 §3.3); pay per run |
+| Postgres | Scaleway Managed PostgreSQL DB-DEV-S | 2 vCPU / 2 GB, 20 GB block | ADR-007 |
+| Batch VM | Hetzner CX43 (8/16/160) if orderable, else CPX32 (4/8/160), else AX41 dedicated (6c/64 GB/2×512 GB) | final size from M0 | heavy streaming loads, Arelle, store on local NVMe (C-5 relaxed: 1 GB limit no longer binding, but loaders keep streaming) |
+
+Spike **S-1** (start of M3) verifies the unverified points before provisioning prod: always-on worker behaviour and cost of min-scale instances, cold start p95, ephemeral disk size for the store cache, private-container auth, DB IP allow-list for the Hetzner box, provider backup retention/PITR, registry and secret prices. **Fallback (ADR-015 option C):** web, worker and runner on one Scaleway instance with systemd (v0.1 units). DB, storage and batch stay as designed.
 
 ## 4. Networking, scalability, latency
 
-- DNS + TLS at Cloudflare; **Cloudflare Tunnel** to origin (no inbound ports except SSH restricted by key + firewall); WAF managed rules, rate limiting on `/auth/*` and `/api/*`; Turnstile on sign-up/sign-in.
-- Static assets (CSS/JS/images) with long-cache hashed names via Cloudflare cache; HTML not cached (per-user).
-- **Scalability path (NFR-01):**
-  1. ≤100 users: 2 uvicorn workers, 1 worker process, 2 runner slots.
-  2. ~10k users (est. ≤ 5 req/s average, ≤ 50 req/s peak — ASSUMPTION A-21): 4 uvicorn workers, vertical VPS upgrade (8 vCPU/16 GB), SQLite WAL with short write transactions. Writes funnel through short transactions; heavy writes (prices, reconciliation) are in `market.db`, separate from `app.db`.
-  3. Switch criteria to Postgres (ADR-007): sustained write lock waits > 50 ms p95, or a second app server needed for availability. Then: managed EU Postgres or Postgres on the VPS; repositories unchanged (SQLAlchemy Core).
-- Stateless web: sessions in DB, so more workers/hosts are possible.
-- Queue-based load levelling: tool runs, LLM calls, emails, plan reviews, alert evaluation are jobs.
-- Connection handling: one SQLite connection per worker thread, `busy_timeout=5000`, `synchronous=NORMAL` in WAL.
+- Cloudflare (free plan) proxies `app.<domain>` to the web container's HTTPS endpoint: DNS, TLS, WAF managed rules, rate limits on `/auth/*`, `/api/*` and `/billing/webhook`, Turnstile on sign-up/sign-in. Static assets are hashed and cached at Cloudflare; HTML is not cached.
+- The **runner** is a private container. Its endpoint needs a Scaleway-issued token held only by the worker (Secret Manager). It has no DB credentials and no secrets; it gets one pre-signed URL per run.
+- **Postgres** access is restricted by the instance ACL to the Scaleway serving plane and the Hetzner batch VM's static IPv4; TLS is required. Private Network for containers is used if S-1 confirms it, otherwise ACL + TLS.
+- **Batch → Scaleway:** HTTPS to Object Storage (scoped key: write `iip-store/*` only) and Postgres role `iip_batch` (writes `market.std_*` and `market.filing_event` and `market.company_store_version`; nothing in `app`).
+- **Scalability path (NFR-01):** ≤100 users: as §3. ~10k users (≤ 50 req/s peak, A-21): web max 6, worker max 3, DB node DB-DEV-L/GP-XS plus a read replica for read models. No re-architecture.
+- Load levelling: tool runs, LLM calls, emails, plan reviews, alert evaluation and webhook processing are jobs (ADR-013).
+- Latency: SQLAlchemy connection pool per container (size 5); company files from the LRU disk cache (ADR-019); read models in `market`.
 
 ## 5. Availability (NFR-06: 99 % monthly ≈ 7.3 h downtime budget)
 
-- systemd `Restart=on-failure`, `WatchdogSec` for web/worker; Cloudflare health check on `/health` (DB reachable, disk free > 10 %, last price refresh < 36 h on trading days, collector last run age) → email/Telegram alert to operator.
-- Single VPS is a SPOF accepted by the 99 % target (R-10); mitigated by documented rebuild (`deploy/install.sh` idempotent) + Litestream restore in < 1 h for app.db; the store restored from the latest `fdc export` bundle or rebuilt from raw zips.
-- Collectors may be down a day without data loss: incremental, resumable, daily-index reconcile (NFR-06, BR-05).
-- Deploys: brief restart (< 10 s) of web via systemd socket activation or two uvicorn instances behind cloudflared with sequential restart (rolling on one host).
+- Managed containers restart on failure. Health endpoint `/health` checks DB, object storage, last price refresh < 36 h on trading days, published snapshot age and queue age. A Cloudflare health check and healthchecks.io alert the operator by email/Telegram.
+- Postgres: single node for the beta (provider-managed; A-28). Enable the HA standby (+≈ €10/month) at public launch or if the error budget is threatened.
+- A batch-plane outage does not stop serving: the last snapshot serves and new filings wait (NFR-04 allows 24 h). Collectors are resumable (BR-05).
+- Deploys: new container revision, rolling. Rollback = previous image tag.
 
 ## 6. Backups and disaster recovery (A-08)
 
 | Data | Method | RPO | RTO |
 |---|---|---|---|
-| app.db | Litestream continuous replication to EU object storage (S3-compatible), 35-day retention; nightly `sqlite3 .backup` snapshot + `PRAGMA integrity_check` | ≤ 1 min (target ≤ 15 min) | ≤ 1 h restore, ≤ 4 h full host rebuild |
-| market.db | nightly snapshot to object storage (rebuildable from vendor + store) | 24 h | 4 h |
-| as-reported store | raw zips in object storage (source of truth) + weekly `fdc export --all` bundle | 24 h | ≤ 2 days rebuild from raw, hours from bundle |
-| config/secrets | env files in an encrypted offline copy held by owner (password manager) | — | — |
+| Postgres `app` (personal data, billing ledger) | Scaleway automated backups (retention/PITR verified in S-1) + nightly `pg_dump -Fc` from the batch VM, `age`-encrypted, to Hetzner Object Storage (35 days); weekly restore test into `iip_restore_test` | provider PITR if available, else ≤ 24 h (R-14) | ≤ 2 h restore to a new instance |
+| Postgres `market` | same dumps; rebuildable from vendor + store | 24 h | 4 h |
+| as-reported store | raw zips in Hetzner Object Storage (source of truth) + weekly `fdc export --all` bundle + published copy on Scaleway | 24 h | ≤ 2 days rebuild from raw, hours from bundle |
+| config/secrets | Scaleway Secret Manager / batch `/etc/fdc/fdc.env`; offline encrypted copy held by owner | — | — |
 
-Restore drill quarterly (runbook RB-05), verified by staging restore. No backups in GitHub (unlike the screener's quarterly push; personal data must not go to a public/US repo).
+Restore drill quarterly (RB-05). Never in GitHub. Backups age out within 35 days (stated in the privacy notice); the billing ledger is retained per A-27.
 
 ## 7. Observability and troubleshooting
 
-- **Logs:** structlog JSON → journald (30-day retention, `SystemMaxUse`), correlation ids (`request_id`, `job_id`, `run_id`, `tool_run_id`, `collector_run_id`).
-- **Metrics:** `/metrics` (Prometheus text, bound to localhost) — request latency histograms per route, job queue depth/age, tool run durations, LLM tokens, email failures, price refresh age, collector counters (from `collector_run`). V1: scraped by a free Grafana Cloud agent (EU region) **or** simply the `/ops` page — owner choice (low cost).
-- **Health checks:** healthchecks.io per timer (start/success/fail, as in the screener); `/health` for Cloudflare.
-- **Errors:** Sentry-compatible SDK to an EU-hosted error tracker (or GlitchTip self-host) — optional, owner choice.
-- **SLIs/SLOs:** availability 99 % (Cloudflare health checks); page p95 < 2 s (NFR-03) from server timing; filings visible < 24 h (NFR-04) = `now − accepted` of newest filing per sector; prices refreshed by 08:00 CET next trading day (NFR-05).
-- **Alerts:** health fail > 5 min; price refresh missed; collector stale; queue age > 15 min; disk > 80 %; backup replication lag > 15 min; LLM budget 80 %.
-- **Runbooks** (`deploy/runbooks/`):
-  - RB-01 SEC 403/429 or rate-limit block — check UA, lower `FDC_RATE`, resume.
-  - RB-02 Backfill crashed / disk full — `fdc status`, free staging, resume (idempotent).
-  - RB-03 Price refresh failed — vendor status, rerun job for date, alerts re-evaluate.
-  - RB-04 SQLite "database is locked" spikes — identify long transaction via logs, check worker batch sizes, consider ADR-007 switch.
-  - RB-05 Restore app.db from Litestream; restore store from bundle.
-  - RB-06 Tool runner saturation / runaway — check limits, kill runs, adjust quotas.
-  - RB-07 LLM budget exhausted — kill switch, inform users.
-  - RB-08 GDPR request — export/delete commands and verification.
+- **Logs:** structlog JSON to stdout → Scaleway Cockpit (included retention for Scaleway products: 1 week logs, 1 month metrics; [Scaleway](https://scaleway.com/en/pricing/managed-services)). Batch VM: journald 30 days + optional shipping to Cockpit (€0.35/GB, low volume). Correlation ids: `request_id`, `job_id`, `run_id`, `tool_run_id`, `collector_run_id`, `builder_session_id`, `reservation_id`.
+- **Metrics:** request latency per route, queue depth/age, tool run durations, **LLM tokens and charged EUR per hour**, open reservations, webhook failures, email failures, price refresh age, snapshot age, collector counters. `/ops` page for the operator.
+- **SLIs/SLOs:** availability 99 %; page p95 < 2 s (NFR-03); filings visible < 24 h (NFR-04); prices by 08:00 CET next trading day (NFR-05); metering reconciliation gap ≤ 1 % per month (FR-29).
+- **Alerts:** health fail > 5 min; price refresh missed; snapshot older than 36 h; queue age > 15 min; batch disk > 80 %; dump missing; webhook signature failures; reservations open > 15 min; LLM token rate > safety limit (`llm_kill_switch`).
+- **Runbooks** (`deploy/runbooks/`): RB-01 SEC 403/429 · RB-02 backfill crashed / disk full · RB-03 price refresh failed · RB-04 Postgres slow queries / connections exhausted (v0.1 "SQLite locked" replaced) · RB-05 restore Postgres from provider backup or dump; restore store from bundle · RB-06 runner saturation · RB-07 LLM vendor outage or kill switch: builder paused, reservations released · RB-08 GDPR request · **RB-09 monthly billing reconciliation** (usage records vs LLM vendor invoice vs payment provider payouts) · **RB-10 webhook backlog / missed webhook** (replay from provider dashboard; idempotent inbox).
 
 ## 8. CI/CD
 
-- **CI (GitHub Actions, per PR):** `uv sync` → `ruff check` + `ruff format --check` → `mypy` → `lint-imports` (import-linter contracts) → unit → integration (SQLite) → contract (store schema from `fdc` tag, runner protocol) → e2e (Playwright against app on seed bundle) → `pip-audit`. Required checks for merge.
-- **Collector repo CI:** same lint/type/tests on fixture zips; never downloads from SEC (C-8).
-- **CD (owner-triggered):** tag `vX.Y.Z` on main → GitHub Action builds a wheel and release notes (no deploy credentials in GitHub, matching the screener's "data on server only" rule) → on the server `deploy/install.sh vX.Y.Z` (pull tag, `uv sync --frozen`, `alembic upgrade head` against staging first, smoke e2e, then prod, restart units). Optionally a GitHub deployment via SSH key with a restricted forced command — owner choice.
-- **Strategy:** staging → prod; rolling restart; rollback = reinstall previous tag; DB migrations expand/contract so the previous version runs on the new schema; Litestream point-in-time restore for disasters.
-- **IaC:** `deploy/install.sh` (idempotent: users, dirs, venvs, units, cloudflared, litestream config) + `deploy/provision.md` for the VPS (Hetzner Cloud CLI or console). Terraform optional later.
-- **Secrets in pipeline:** none needed for CI; deploy secrets live only on the server.
+- **CI (GitHub Actions, per PR):** `uv sync` → ruff + format → mypy → import-linter → unit → integration (Postgres service container) → contract → e2e (Playwright, seed bundle, fake LLM/payment/price adapters) → `pip-audit` → container build (no push on PRs).
+- **Collector repo CI:** lint/type/tests on fixture zips; never downloads from SEC (C-8).
+- **CD (owner-triggered):** tag `vX.Y.Z` → workflow builds the image and pushes it to Scaleway Container Registry. The push-only registry token is a GitHub environment secret; the `prod` environment requires owner approval. Then: `alembic upgrade head` against staging as a one-off container job → smoke e2e → prod migration → deploy the new revision. The Scaleway API key used by CD is scoped to the containers namespace + registry. Application secrets never go to GitHub; containers read them from Secret Manager. Data jobs still never run in CI (C-8).
+- **Batch VM:** `deploy/batch/install.sh vX.Y.Z` on the box (v0.1 operating model).
+- **Migrations:** expand/contract so the previous revision runs on the new schema.
+- **IaC:** OpenTofu/Terraform with the Scaleway and Hetzner providers (`deploy/infra/`): namespaces, containers, DB instance, users/ACLs, buckets and lifecycle rules, TEM domain, Hetzner VM, firewall, buckets. State is encrypted in Scaleway Object Storage. Two providers make IaC worth having from the start (v0.1 deferred it).
 
-## 9. Collector operations
+## 9. Collector operations (batch VM)
 
 | Unit | Schedule | Notes |
 |---|---|---|
-| `fdc-backfill.service` | manual start (initial) then quarterly timer for new data sets | `MemoryMax=768M`, `Nice=10`, `IOSchedulingClass=idle` |
+| `fdc-backfill.service` | manual start (initial), then a quarterly timer | for the initial 12-year backfill, temporarily rescale the VM (hourly billing) or run on the AX box; `Nice=10`, `IOSchedulingClass=idle` |
 | `fdc-feed.timer` | every 15 min (+ 06:00 daily-index reconcile) | one SEC request per poll |
-| `fdc-watch@<sector>.service` | long-running (or 15-min timer) per sector | shares host-wide limiter |
-| `fdc-ffiec.timer` | quarterly + monthly check for amendments | |
-| `fdc-export.timer` | weekly | bundle to object storage |
+| `fdc-watch@<sector>.service` | long-running per sector (BR-15) | shared host-wide limiter (NFR-07) |
+| `fdc-ffiec.timer` | quarterly + monthly amendment check | |
+| `iip-reconcile.service` | triggered after loads (path unit on catalog seq) | writes `market.std_*` |
+| `fdc-publish.service` | after each load/reconcile | ADR-019 |
+| `fdc-export.timer` | weekly | bundles to Hetzner Object Storage |
+| `iip-pgdump.timer` | nightly 02:30 | encrypted dump to Hetzner Object Storage |
 
-Unix user `fdc` owns the store; `iip` and `iip-runner` are in group `fdc-read` with read-only access.
+## 10. Cost (NFR-10: €50–200/month, excl. LLM; prices checked 2026-11-06, EUR excl. VAT)
 
-## 10. Cost notes (owner decides ceiling, Q-02)
+### 10.1 Recommended: option A (managed serving + Hetzner batch)
 
-| Item | Estimate (EUR/month) | Notes |
+| Item | Basis | EUR/month | Verified |
+|---|---|---|---|
+| `iip-web` container, always 1 × 0.5 vCPU/1 GB | 1.314 M vCPU-s × €0.00001 + 2.628 M GB-s × €0.000002, minus free tier 200k vCPU-s / 400k GB-s | ≈ 15.6 | rates yes ([Scaleway serverless](https://www.scaleway.com/en/pricing/serverless/)); min-scale billing behaviour **not verified** (S-1) |
+| `iip-worker` container, same size (free tier used up) | 1.314 M vCPU-s + 2.628 M GB-s | ≈ 18.4 | as above |
+| `iip-tool-runner`, scale to zero | est. 150k vCPU-s + 150k GB-s/month (100 users × 5 runs/day × 10 s) | ≈ 1.8 | rates yes; usage ASSUMPTION |
+| Managed PostgreSQL DB-DEV-S + 20 GB | €0.0156/h × 730 + 20 × €0.0993 | ≈ 13.4 | yes ([Scaleway DB](https://www.scaleway.com/en/pricing/managed-databases)) |
+| Object Storage one-zone (store copy + snapshots ≈ 50–100 GB) | €0.00752/GB; 75 GB egress free | ≈ 1 | yes ([Scaleway storage](https://www.scaleway.com/en/pricing/storage/)) |
+| Transactional Email (≤ 5k/month) | 300 free, €0.25/1,000 | ≈ 1 | yes ([Scaleway managed services](https://scaleway.com/en/pricing/managed-services)) |
+| Cockpit, Container Registry, Secret Manager | Scaleway product data included; registry/secrets small | ≈ 0–3 | Cockpit yes; registry/secrets **not verified** |
+| Hetzner batch VM | CX43 €16.49 / CPX32 €35.99 / AX41 €59 (no setup fee) | 16.5–59 (plan: 36) | prices yes; CX/CPX "currently unavailable" on 2026-11-06 ([Hetzner cloud](https://www.hetzner.com/cloud/regular-performance/), [AX](https://www.hetzner.com/dedicated-rootserver/matrix-ax/)) |
+| Hetzner Object Storage (raw zips, bundles, dumps ≤ 1 TB) | flat incl. 1 TB + 1 TB egress | 6.49 | yes ([Hetzner OS](https://hetzner.com/storage/object-storage)) |
+| Cloudflare free, healthchecks.io free | | 0 | not re-verified |
+| Domain | ≈ €12/year | ≈ 1 | **not verified** (owner may own one) |
+| **Price vendor: marketstack Professional** | $49.99 ≈ €43.3 (annual $43.99 ≈ €38) | ≈ 43 | price yes ([marketstack](https://marketstack.com/pricing)); display licence **pending confirmation** (ADR-012) |
+| **Total** | | **≈ 121 (CX43) / 141 (CPX32, plan) / 164 (AX41)** | headroom to €200: 36–79 |
+| Optional: Postgres HA node | €0.0136/h × 730 | + 9.9 | yes |
+| One-off: backfill rescale (e.g. a few days on a larger VM) | hourly | ≈ 5–15 once | estimate |
+
+USD→EUR at the ECB reference rate 1.1537 (16-Sep-2026, [Banca d'Italia](https://www.bancaditalia.it/compiti/operazioni-cambi/cambio/cambi_rif_20260916)).
+
+### 10.2 Alternatives (detail in ADR-015)
+
+| Option | Monthly incl. price vendor | Note |
 |---|---|---|
-| VPS 4 vCPU/8 GB EU | 15–20 | Hetzner-class pricing; verify current price |
-| Extra volume 100–200 GB (if M0 needs) | 5–10 | |
-| Object storage (raw zips + backups, ~100–300 GB) | 2–10 | Hetzner Object Storage / Backblaze B2 EU / Cloudflare R2 (EU jurisdiction) |
-| Cloudflare (free plan: DNS, Tunnel, WAF basic, Turnstile) | 0 | |
-| Email (EU provider, free/low tier for beta volumes) | 0–15 | |
-| healthchecks.io free | 0 | |
-| Price vendor EOD with multi-user display licence | **owner decision** (≈ 0 – 100+) | see ADR-012 |
-| LLM (tool builder) | **owner decision**: ≈ 1–5 per active builder user/month at proposed quotas | see ADR-010 |
-| **Total excl. price/LLM** | **≈ 25–55** | |
+| B. All on one Hetzner VM (v0.1) | ≈ 88 (CPX32) – 111 (AX41) | cheapest; no managed services; leaves room for marketstack Business or Tiingo partially |
+| C. Scaleway DEV1-L VM (€30.66) + managed Postgres + Hetzner batch | ≈ 114–160 (plan 134; IPv4/block storage extra, not verified) | S-1 fallback; IPv4/block prices not verified |
+| D. All Scaleway (batch on DEV1-L + 200 GB block) | ≈ 145–165 | most managed; less batch capacity per euro than Hetzner |
 
-Figures are rough planning estimates to be verified at purchase time.
+### 10.3 What is outside NFR-10
+LLM tokens are paid by premium users (BR-17, ADR-010/020). Payment provider fees are deducted from top-up revenue (A-26).
+
+### 10.4 Budget sensitivities
+- **Price vendor fallback** (marketstack declines display): Tiingo Start-up Redistribution $250 ≈ €217. Option A becomes ≈ €315, option B ≈ €262: **above €200 in every option** → owner decision Q-03b.
+- **marketstack Business** ($149.99 ≈ €130) if Professional's quota or licence is insufficient: A ≈ €208–228 (over), B ≈ €175 (fits).
 
 ## 11. DevOps handoff checklist
 
-1. Provision EU VPS (size per M0 result; default 4 vCPU/8 GB/160 GB) with Debian 12, SSH key-only, firewall (deny inbound except SSH from owner IPs), unattended security upgrades.
-2. Create Unix users `iip`, `iip-runner`, `fdc`, group `fdc-read`; directories `/opt/iip`, `/srv/iip/{app.db,market.db}`, `/srv/fdc/{store,staging,raw}` with permissions per §9 and 06 §3.3.
-3. Install uv, Python 3.12, sqlite3 CLI, litestream, cloudflared.
-4. Write `deploy/install.sh` (idempotent) + `deploy/iip.env.example` + `/etc/iip/iip.env`, `/etc/fdc/fdc.env` (incl. `EDGAR_USER_AGENT`).
-5. systemd units: `iip-web`, `iip-worker`, `iip-tool-runner` (hardening per 06 §3.3), timers (prices, plan reviews, reconcile, analytics rollups, backups), `fdc-*` units per §9, `litestream`; all jobs wrapped with healthchecks pings.
-6. Cloudflare: domain/zone, Tunnel to `iip-web`, WAF managed rules, rate-limit rules on auth/API, Turnstile keys, Access policy for `staging.` and `/ops`.
-7. Object storage bucket(s) in EU with lifecycle rules (35 days backups; raw zips kept), credentials scoped per bucket.
-8. Litestream replication for `app.db`; nightly snapshot jobs for `market.db`; weekly `fdc export` upload; restore runbook RB-05 tested once.
-9. Observability: journald limits, `/metrics` localhost, `/health` endpoint wired to Cloudflare health check + alert email; healthchecks.io checks per timer.
-10. CI workflows for both repos (§8) with required checks; release workflow building wheels; no data calls in CI.
-11. Staging environment on the same VPS (separate users/DBs/hostname) with seed bundle import.
-12. Runbooks RB-01..RB-08 in `deploy/runbooks/`.
-13. Cost tracking note: actual monthly cost recorded in `docs/architecture/03-deployment.md` §10 after provisioning.
+1. Run spike S-1 (§3) and record results here; confirm option A or switch to C.
+2. Accounts: Scaleway org (project `iip`, fr-par), Hetzner project; billing alerts at €150 and €190/month on both.
+3. IaC in `deploy/infra/` (OpenTofu): Scaleway namespaces `iip-prod`/`iip-staging`, containers (§3 sizes, min/max scale, private runner), registry, Secret Manager entries, Managed PostgreSQL (DB-DEV-S, backups on, ACL = containers + batch VM IP, TLS), databases `iip`, `iip_staging`, roles `iip_web`, `iip_worker`, `iip_batch`, `iip_ro` (ADR-007), buckets `iip-store` (one-zone, lifecycle 30 days for superseded keys), TEM domain (SPF/DKIM/DMARC); Hetzner VM (size per M0), firewall (SSH from owner IPs only), Object Storage buckets `fdc-raw`, `fdc-bundles`, `iip-dumps` (35-day lifecycle).
+4. Batch VM: Debian 12, unattended upgrades, users `fdc` and `iip-batch`, `/srv/fdc/{store,staging,raw}`, uv + Python 3.12, sqlite3, `age`, `pg_dump` (client version = server); `deploy/batch/install.sh`; env `/etc/fdc/fdc.env` (incl. `EDGAR_USER_AGENT`, bucket keys, `iip_batch` DSN).
+5. systemd units on the batch VM per §9, all wrapped with healthchecks.io pings.
+6. Cloudflare: zone, proxied DNS to the web container, WAF managed rules, rate limits (`/auth/*`, `/api/*`, `/billing/webhook`), Turnstile keys, Access policy for `staging.` and `/ops`.
+7. Container images: `Dockerfile` (python:3.12-slim, uv, non-root user); separate minimal image for the runner (only `iip.tools.dsl` + readers, no DB drivers, no SDKs).
+8. CD workflow per §8 with the `prod` environment requiring owner approval; scoped Scaleway API keys.
+9. Backups: verify provider backup retention/PITR; nightly encrypted dump; weekly restore test; RB-05 drill once before beta.
+10. Observability: Cockpit dashboards (latency, queue, tokens/charges, snapshot age, price age), alerts per §7, `/health` wired to the Cloudflare health check.
+11. Payment provider sandbox account + webhook endpoint + signing secret in Secret Manager (ADR-020), staging only until gate M5b passes.
+12. Runbooks RB-01..RB-10 in `deploy/runbooks/`.
+13. Record actual monthly cost in §10 after the first full month.

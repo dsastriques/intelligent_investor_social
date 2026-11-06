@@ -5,8 +5,8 @@
 | Level | Scope | Tooling | Runs |
 |---|---|---|---|
 | Unit | domain aggregates/value objects, application use cases with fake ports, DSL parser/evaluator, policies, collector record parsing, restatement logic, reconciliation mapping | pytest, hypothesis (DSL, restatement tolerances) | every commit |
-| Integration | SQLAlchemy repositories on real SQLite, Alembic up/down, outbox relay, job queue, collector loaders on fixture zips, store_client queries, tool-runner over a Unix socket | pytest + tmp SQLite files | every PR |
-| Contract | (a) store schema v1: app's `FilingStore` adapter vs `fdc` published `store_client` + schema version (pinned tag); (b) tool-runner request/response JSON schema; (c) `PriceProvider` adapter vs recorded vendor fixtures; (d) screener-core wrapper vs pinned screener version (golden outputs) | pytest, JSON Schema | every PR |
+| Integration | SQLAlchemy repositories on real Postgres (CI service container / testcontainers), Alembic up/down, outbox relay, job queue (`SKIP LOCKED`), billing ledger/reservations under concurrency, webhook inbox, collector loaders on fixture zips, store_client + snapshot reader, tool-runner over HTTP | pytest + Postgres + tmp SQLite store files | every PR |
+| Contract | (a) store schema v1: app's `FilingStore` adapter vs `fdc` published `store_client` + schema version (pinned tag); (b) tool-runner request/response JSON schema; (c) `PriceProvider` adapter (marketstack) vs recorded vendor fixtures; (e) `PaymentGateway` adapter vs recorded provider webhook payloads + signature fixtures; (d) screener-core wrapper vs pinned screener version (golden outputs) | pytest, JSON Schema | every PR |
 | E2E | user journeys UC-01..UC-13 in a browser against app on seed bundle | Playwright (Python) | every PR (smoke subset) + nightly full |
 | NFR | performance (NFR-03), load (NFR-01), sandbox security (NFR-09), authZ matrix (NFR-08/BR-06), backup/restore (NFR-06), collector memory (NFR-02), rate limit (NFR-07) | locust/k6, pytest, `/usr/bin/time -v`, ZAP baseline | nightly / pre-release |
 
@@ -14,8 +14,8 @@ Target shape: many unit tests, fewer integration, a focused e2e set (one happy p
 
 ## 2. E2E setup
 
-- **App under test:** `iip-web` + `iip-worker` + `iip-tool-runner` started by a pytest fixture (`uv run iip dev-up --seed tests/seed/bundle`) on random ports; LLM, email and price vendor replaced by **fakes** selected via env (`IIP_LLM=fake`, `IIP_EMAIL=capture`, `IIP_PRICES=fixture`).
-- **Test data:** `tests/seed/bundle/` = small `fdc export` (≈ 10 companies: industrial, bank, insurer, REIT, 20-F filer, a company with a restatement, one FFIEC bank) + fixture prices (2 years) + factory for users/clubs (`tests/factories.py`). Each test resets `app.db` from a template file (copy, ms-fast); `market.db` and store are read-only fixtures.
+- **App under test:** `iip-web` + `iip-worker` + `iip-tool-runner` started by a pytest fixture (`uv run iip dev-up --seed tests/seed/bundle`) on random ports; LLM, email, price vendor and payment provider replaced by **fakes** selected via env (`IIP_LLM=fake` with deterministic token usage, `IIP_EMAIL=capture`, `IIP_PRICES=fixture`, `IIP_PAYMENTS=fake`).
+- **Test data:** `tests/seed/bundle/` = small `fdc export` (≈ 10 companies: industrial, bank, insurer, REIT, 20-F filer, a company with a restatement, one FFIEC bank) + fixture prices (2 years) + factory for users/clubs (`tests/factories.py`). Each test resets schema `app` from a Postgres template database (`CREATE DATABASE … TEMPLATE`, fast); schema `market`, the store files and the analysis snapshot are read-only fixtures.
 - **CI:** GitHub Actions job installs Playwright Chromium, runs smoke e2e on PRs and full e2e nightly; artefacts: traces/screenshots on failure. No network to SEC/vendors (C-8).
 
 ## 3. Commands (also in `architect.config.md`)
@@ -59,6 +59,10 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | BR-14 | unit (architecture) | `tests/unit/test_architecture.py::test_no_broker_or_payment_dependencies` (dependency allow-list), e2e `test_disclaimer_visible` | planned |
 | BR-15 | unit | `fdc: tests/unit/test_sectors.py::test_sic_maps_to_one_sector`, `tests/integration/test_watch.py::test_watcher_claims_only_its_sector` | planned |
 | BR-16 | integration | `fdc: tests/integration/test_ffiec.py::test_call_report_loaded_with_source_ffiec` | planned |
+| BR-17 | unit | `tests/unit/billing/test_ledger.py::test_reserve_rejected_when_available_below_worst_case`, `::test_settle_never_exceeds_reservation`, `::test_release_restores_available`, `::test_reservation_single_terminal_transition`, `::test_balance_never_negative` (hypothesis) | planned |
+| BR-17 | unit | `tests/unit/tools/test_builder_session.py::test_session_start_requires_entitlement`, `::test_llm_not_called_when_reservation_fails`, `tests/unit/tools/test_run_tool.py::test_running_tools_not_gated_by_billing` | planned |
+| BR-17 | integration | `tests/integration/billing/test_concurrency.py::test_parallel_reservations_cannot_overspend`, `tests/integration/billing/test_webhooks.py::test_top_up_granted_once_per_event`, `::test_invalid_signature_rejected`, `::test_return_url_grants_nothing` | planned |
+| BR-17 | e2e | `tests/e2e/test_premium.py::test_no_credit_blocks_builder_but_runs_tools`, `::test_top_up_then_build_and_see_usage` | planned |
 
 ### FR/NFR acceptance tests (selection)
 
@@ -74,7 +78,9 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | FR-12 | `tests/integration/tools/test_tool_to_watchlist.py` |
 | FR-15 | `tests/integration/portfolio/test_plan_review.py::test_machine_expectations_evaluated` |
 | FR-17/18 | `tests/integration/alerts/test_alerts.py::test_price_move_fires_once_per_state_change`, `::test_email_and_inapp_delivered_idempotently` |
-| FR-27 | `tests/integration/identity/test_gdpr.py::test_export_contains_all_contexts`, `::test_delete_saga_removes_personal_data_resumable` |
+| FR-27 | `tests/integration/identity/test_gdpr.py::test_export_contains_all_contexts`, `::test_delete_saga_removes_personal_data_resumable`, `::test_billing_records_pseudonymised_not_deleted` |
+| FR-29 | `tests/integration/billing/test_metering.py::test_usage_record_per_call_with_price_table_version`, `::test_charge_uses_vendor_reported_tokens_and_margin`, `::test_expired_reservations_released`; `tests/unit/billing/test_price_table.py` |
+| NFR-11 | `tests/unit/test_architecture.py::test_every_price_row_has_licensed_source` (source allow-list from ADR-012) |
 
 ## 5. Contract tests between components
 - `fdc` store schema v1 ↔ app `FilingStore` adapter: the app's CI installs the pinned `fdc` tag, builds a store from its fixture zips, and runs the adapter tests. Schema major bump requires an ADR + app change.
@@ -83,13 +89,14 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 
 ## 6. NFR tests
 - **Performance (NFR-03):** locust scenario (company page, portfolio page, statements API) on staging with full store: p95 < 2 s at 50 req/s; server-timing budget 300 ms.
-- **Load/scale (NFR-01):** synthetic 10k users / 30k portfolios / 300k changes in `app.db`; run alert evaluation and page tests; record lock waits (ADR-007 criteria).
-- **Sandbox (NFR-09):** DSL fuzzing (hypothesis) – no crash/timeout beyond limits; attempted network access from runner fails; runner cannot open `app.db`; memory bomb spec rejected by cost estimate; `systemd-analyze security iip-tool-runner` ≤ 3.0.
+- **Load/scale (NFR-01):** synthetic 10k users / 30k portfolios / 300k changes in schema `app`; run alert evaluation and page tests; record DB CPU, connection use and slow queries (sizing input for the DB node, ADR-007).
+- **Sandbox (NFR-09):** DSL fuzzing (hypothesis) – no crash/timeout beyond limits; runner image contains no DB driver/SDK/secrets (image inspection test, G-25); runner endpoint rejects calls without the worker token; memory bomb spec rejected by cost estimate; container limits enforced (timeout test).
 - **Security:** OWASP ZAP baseline against staging; authZ matrix; pip-audit; CSRF/XSS tests for Markdown posts.
 - **Resilience:** kill worker mid-job → job retried, no duplicate email; kill backfill mid-quarter → rerun completes with no duplicates (BR-05).
 - **Collector memory (NFR-02):** M0 measurement and a regression test that streams a 200 MB synthetic data set with RSS < 512 MB (nightly, `-m slow`).
 - **Rate limit (NFR-07):** unit test of token bucket across processes; integration with fake server counting requests/second.
-- **Backup/restore (NFR-06):** quarterly drill RB-05 recorded.
+- **Backup/restore (NFR-06):** weekly automated dump-restore test + quarterly drill RB-05 recorded.
+- **Billing (FR-29):** monthly reconciliation RB-09 (usage records vs LLM invoice ≤ 1 % gap).
 
 ## 7. Regression suite
 `-m regression` marks: BR matrix tests, authZ matrix, golden screener outputs, e2e smoke per UC. Command in §3. Must be green before every merge to main and every release tag.
@@ -107,4 +114,5 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 4. Playwright harness with `dev-up` fixture, fakes for LLM/email/prices, trace artefacts in CI.
 5. Golden-output contract tests for built-in tools against the pinned screener core.
 6. NFR suites: locust scenario, 10k synthetic data generator, sandbox fuzz and isolation tests, ZAP baseline job.
+6a. Billing: fake `PaymentGateway` + fake LLM with fixed usage; concurrency tests for reservations; recorded webhook fixtures per chosen provider.
 7. Wire `regression` command and CI required checks; update §4 statuses as tests land.

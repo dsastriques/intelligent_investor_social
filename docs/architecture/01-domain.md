@@ -1,6 +1,6 @@
 # 01 — Domain model
 
-Strategic and tactical DDD for Intelligent Investor Pro V1. Invariants link to BR ids. Terms in **bold** are the ubiquitous language; code, tables and UI use these names (guideline G-05).
+Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.2: adds BC-11 Billing & Entitlements for BR-17/FR-29; storage names follow ADR-007: Postgres schemas `app` and `market`). Invariants link to BR ids. Terms in **bold** are the ubiquitous language; code, tables and UI use these names (guideline G-05).
 
 ## 1. Ubiquitous language
 
@@ -35,6 +35,12 @@ Strategic and tactical DDD for Intelligent Investor Pro V1. Invariants link to B
 | **Post / Comment** | Social write-up (with **embeds**) and replies |
 | **Club** | Investor Club (record-only); **super admin** (creator, exactly one), **admins**, **members** |
 | **Mark as bought** | Member records a club watchlist company as bought into their own portfolio (BR-11) |
+| **Premium** | Entitlement to use the conversational tool builder (BR-17); in V1 = a billing account with available credit (ADR-020) |
+| **Credit** | Prepaid amount (EUR) on a user's **billing account**, spendable only on the platform's own metered LLM usage; not money held for investment (BR-14) |
+| **Ledger entry** | Immutable record changing a credit balance: top-up, subscription grant, settlement, refund, adjustment, expiry |
+| **Reservation** | Credit held for one LLM call before it runs (worst-case cost); later **settled** with actual usage or **released** |
+| **Usage record** | Metered LLM call: tokens by type, model, price-table version, cost and charged amount, linked to a **builder session** and tool |
+| **Price table** | Versioned per-model token prices + margin used to compute charges (FR-29) |
 
 ## 2. Subdomains
 
@@ -48,6 +54,7 @@ Strategic and tactical DDD for Intelligent Investor Pro V1. Invariants link to B
 | Watchlists & alerts | Supporting | |
 | Market prices / FX | Supporting (bought data) | |
 | Reconciliation / standardization | Supporting | Required by tools, kept apart from storage (BR-02) |
+| Billing & entitlements (credits, metering, payments) | Generic (supporting rules specific to BR-17) | standard ledger/metering patterns; payment execution bought from a provider |
 | Identity & access | Generic | |
 | Notifications | Generic | |
 
@@ -56,15 +63,16 @@ Strategic and tactical DDD for Intelligent Investor Pro V1. Invariants link to B
 | # | Context | Responsibility | Owns data |
 |---|---|---|---|
 | BC-1 | **Filings** (collector, repo `financial-data-collector`) | Collect, store as-reported, detect restatements, run history | as-reported store (catalog + per-company files), raw archive |
-| BC-2 | **Market Data** | Companies/instruments registry for the app, prices, FX, sector map, filing feed into the app | `market.db`: instruments, prices_daily, fx_rates |
-| BC-3 | **Reconciliation** | Map as-reported facts → standardized financials with lineage | `market.db`: std_financials, std_lineage, mapping sets |
-| BC-4 | **Tools** | Built-in and user tools, tool versions, builder sessions, runs, sandbox | `app.db`: tools, tool_versions, builder_sessions, tool_runs |
-| BC-5 | **Portfolio & Plans** | Portfolios, changes with reasons, investment plans, reviews | `app.db` |
-| BC-6 | **Watchlists & Alerts** | Watchlists, entries, alert rules, alert evaluation | `app.db` |
-| BC-7 | **Social** | Shares, posts, comments, reports/moderation, profiles' public face | `app.db` |
-| BC-8 | **Clubs** | Clubs, memberships, roles, invitations, club documents, mark-as-bought orchestration | `app.db` |
-| BC-9 | **Identity & Access** | Accounts, sessions, consents, GDPR export/delete, spaces, authorization policies | `app.db` |
-| BC-10 | **Notifications** | In-app inbox, email delivery, preferences | `app.db` |
+| BC-2 | **Market Data** | Companies/instruments registry for the app, prices, FX, sector map, filing feed into the app | `market` schema: instruments, prices_daily, fx_rates |
+| BC-3 | **Reconciliation** | Map as-reported facts → standardized financials with lineage | `market` schema: std_financials, std_lineage, mapping sets |
+| BC-4 | **Tools** | Built-in and user tools, tool versions, builder sessions, runs, sandbox | `app` schema: tools, tool_versions, builder_sessions, tool_runs |
+| BC-5 | **Portfolio & Plans** | Portfolios, changes with reasons, investment plans, reviews | `app` schema |
+| BC-6 | **Watchlists & Alerts** | Watchlists, entries, alert rules, alert evaluation | `app` schema |
+| BC-7 | **Social** | Shares, posts, comments, reports/moderation, profiles' public face | `app` schema |
+| BC-8 | **Clubs** | Clubs, memberships, roles, invitations, club documents, mark-as-bought orchestration | `app` schema |
+| BC-9 | **Identity & Access** | Accounts, sessions, consents, GDPR export/delete, spaces, authorization policies | `app` schema |
+| BC-10 | **Notifications** | In-app inbox, email delivery, preferences | `app` schema |
+| BC-11 | **Billing & Entitlements** | Premium entitlement, prepaid credit ledger, reservations, LLM usage metering, price table, payment provider integration (checkout, webhooks, refunds) | `app` schema, prefix `bl_` |
 
 The brief's "Portfolio & Plans" and "Tools" contexts are kept; "Watchlists & Alerts" and "Reconciliation" are split out because they have distinct models and change cadence. Space/policy code lives in Identity & Access as a shared kernel used by every user-facing context.
 
@@ -104,6 +112,12 @@ flowchart LR
   I -.-> W
   I -.-> S
   I -.-> C
+  B[BC-11 Billing & Entitlements]
+  PAY[(Payment provider)]
+  T -->|Customer/Supplier: can_use, reserve/settle| B
+  PAY -->|ACL: PaymentGateway adapter, webhooks| B
+  B -->|CreditLow, TopUpReceived| N
+  I -.-> B
   W -->|AlertTriggered| N
   S -->|CommentAdded| N
   C -->|Invited, RoleChanged| N
@@ -115,6 +129,8 @@ Relationships:
 - **Reconciliation: ACL** between the as-reported model and the screener's `AnnualFinancials`.
 - **Screener core: Conformist** (we use its models and functions unchanged), wrapped by a Tools-side adapter.
 - **Clubs → Portfolio: Customer/Supplier** through an application service (`MarkAsBought`), not by touching Portfolio tables.
+- **Tools → Billing: Customer/Supplier** via the `Entitlements`/`Metering` facade (ADR-020). Tools never reads ledger tables; Billing never sees conversation content (only session/tool ids and token counts).
+- **Payment provider → Billing: ACL** (`PaymentGateway` port); provider events are translated into ledger commands once, idempotently.
 - **Identity & Access: Shared kernel** (`Principal`, `SpaceId`, `Role`, `Policy` interfaces), small and stable.
 
 ## 5. Tactical model per context
@@ -153,7 +169,7 @@ Detail and schema in `05-data-collector.md`.
   - ▶ `CreateTool`, `ReviseTool`, `CopyTool`, `ImportToolToClub` (FR-25), `RunTool`.
 - **ToolRun**: tool version, caller principal, space, inputs, *DataAsOf(store snapshot, mapping version, prices date)*, status, result (table rows, metrics), resource usage. ⇒ `ToolRunCompleted`.
   - ↻ If ToolSpec output is `watchlist` → Watchlists applies `ApplyToolResult` (FR-12).
-- **BuilderSession**: messages, proposed spec drafts, validation outcomes, tokens used. ⚑ Only a spec that validates and passes a dry run can be saved as a version (FR-11).
+- **BuilderSession**: owner principal, target space, messages, proposed spec drafts, validation outcomes, tokens used, charged total (from Billing). ⚑ Only a spec that validates and passes a dry run can be saved as a version (FR-11). ⚑ **BR-17**: a session can be started and each LLM call made only after `Entitlements.can_use(principal, tool_builder)` and a successful `Metering.reserve`; running tools has no such check. A builder session in a club space is billed to the acting admin's own account (A-25).
 - **Built-in tools** are `Tool`s of kind `builtin` owned by the platform space, implemented by adapters around screener functions (`02-implementation.md` §9).
 
 ### 5.4 BC-5 Portfolio & Plans
@@ -208,6 +224,24 @@ Detail and schema in `05-data-collector.md`.
 - **Space**: id, kind (`private` | `club`), owner (account or club). Shared kernel *Principal*, *Policy*.
 - **Notification**: recipient, kind, payload, read_at; **EmailDelivery**: status, attempts. **Preferences** per kind/channel (FR-18).
 
+### 5.9 BC-11 Billing & Entitlements (BR-17, FR-29, ADR-020)
+
+- **BillingAccount** (root, one per user account): currency EUR, status (`active` | `suspended` | `closed`), provider customer ref, balance = Σ ledger entries, available = balance − open reservations.
+  - **LedgerEntry** (append-only): kind (`top_up` | `subscription_grant` | `settlement` | `refund` | `adjustment` | `expiry`), amount (EUR, integer micros), ref (provider event id / reservation id / operator note), at.
+  - ⚑ **BR-17** available balance never goes below zero: a reservation is accepted only if `amount ≤ available` (row lock on the account; Postgres, ADR-007).
+  - ⚑ Ledger entries are immutable; corrections are new `adjustment` entries with an operator reason (screener rule 4 spirit, G-21).
+  - ⚑ A `top_up` is created only from a verified provider event, at most once per provider event id (idempotent).
+  - ⚑ Credit is not transferable between accounts and never paid out except as a provider refund (BR-14; ADR-020 §6).
+- **Reservation**: account, builder session, amount, status (`open` → `settled` | `released` | `expired`), expires_at (15 min).
+  - ⚑ Settlement amount ≤ reserved amount (reservation is worst case); difference released. ⚑ One terminal transition only.
+- **UsageRecord** (immutable): account, builder session, tool id, model, input/output/cache-write/cache-read tokens, vendor request id, price-table version, cost USD, FX rate, margin, charged EUR.
+- **PriceTable** (versioned config): per model token prices (USD/Mtok by token type), margin %, minimum charge per call; ⚑ the version used is stored with every usage record.
+- **Entitlement**: `tool_builder` granted when the account is active and premium per plan model (P1: available credit ≥ `session_min_credit`; P2: active subscription + credit).
+- **PaymentIntent**: product (top-up amount / plan), provider checkout id, status; idempotency key.
+- ▶ `StartTopUp`, `HandleProviderEvent`, `Reserve`, `Settle`, `Release`, `ExpireReservations`, `Refund`, `Adjust` (operator), `CloseAccount` (deletion saga: pseudonymise, A-27).
+- ⇒ `CreditToppedUp`, `CreditLow` (below threshold), `CreditExhausted`, `UsageCharged`, `RefundIssued`.
+- ↻ `CreditExhausted` → builder sessions paused (Tools); `CreditLow` → notification (BC-10).
+
 ## 6. Domain events (catalogue)
 
 | Event | Producer | Consumers |
@@ -223,6 +257,7 @@ Detail and schema in `05-data-collector.md`.
 | CommentAdded, PostPublished | Social | Notifications |
 | MemberJoined/Ejected, AdminGranted/Revoked, Invited | Clubs | Notifications, Identity (policy cache) |
 | ClubCompanyMarkedBought | Clubs | Notifications (optional to club) |
-| AccountDeletionRequested | Identity | all contexts (deletion saga) |
+| CreditToppedUp, CreditLow, CreditExhausted, UsageCharged, RefundIssued | Billing | Notifications, Tools (resume/pause builder sessions), operator metrics |
+| AccountDeletionRequested | Identity | all contexts (deletion saga; Billing pseudonymises) |
 
 In-process events are dispatched after commit via the outbox (`02-implementation.md` §7).

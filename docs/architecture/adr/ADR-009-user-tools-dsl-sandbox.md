@@ -15,6 +15,8 @@ FR-11: users create and modify tools by conversation and run them on platform da
 ## Decision
 Option 3 for V1. Option 2 is the documented V2 escape hatch if users need more expressiveness.
 
+v0.2 note (ADR-015): the runner runs as a private managed container without DB role or secrets, reading a public analysis snapshot (ADR-019); the systemd-sandbox variant remains the fallback (hosting option C). The decision itself is unchanged.
+
 ## Consequences
 + strong isolation with simple ops; deterministic, explainable, versionable tools; easy to share/copy (BR-07, BR-10).
 + prompt-injection blast radius limited to a validated spec.

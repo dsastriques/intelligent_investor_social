@@ -18,6 +18,6 @@ Option 3, behind `StoreWriter`/`store_client` ports so the layout can change. M0
 
 ## Consequences
 + portable file sets (FR-05), small hot files for company pages, isolated corruption, easy partial rebuilds, simple backups of a rebuildable asset.
-+ app DB stays small for Litestream (ADR-007).
-− cross-company queries on raw facts are expensive; mitigated by Reconciliation's standardized table in market.db.
++ app DB stays small (ADR-007); per-company files can be published as immutable objects to the serving plane (ADR-019, v0.2).
+− cross-company queries on raw facts are expensive; mitigated by Reconciliation's standardized table in Postgres schema `market`.
 − ~8–10k files to manage; catalog must stay consistent (loads write company file first, then catalog, idempotently).

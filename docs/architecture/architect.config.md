@@ -14,7 +14,7 @@ Values marked ASSUMPTION are provisional until the owner confirms (owner questio
 - commands:
   - build: uv sync --frozen --all-groups
   - unit: uv run pytest tests/unit
-  - integration: uv run pytest tests/integration tests/contract
+  - integration: uv run pytest tests/integration tests/contract   # needs Postgres via DATABASE_URL or testcontainers (ADR-007)
   - e2e: uv run pytest tests/e2e --browser chromium
   - regression: uv run pytest tests/unit tests/integration tests/contract tests/e2e -m "not slow" && uv run pytest -m regression
   - lint: uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports

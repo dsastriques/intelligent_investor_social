@@ -1,6 +1,6 @@
 # 06 — Security, authorization, tool sandbox and GDPR (topics T4, T6, part of T8)
 
-Serves BR-06..BR-11, FR-11, FR-19..FR-27, NFR-08, NFR-09, NFR-10.
+Serves BR-06..BR-11, BR-17, FR-11, FR-19..FR-29, NFR-08, NFR-09, NFR-10. v0.2: runner isolation moved to a private container (ADR-015), billing threats and premium gating added (ADR-020).
 
 ## 1. Threat model (summary)
 
@@ -12,7 +12,10 @@ Serves BR-06..BR-11, FR-11, FR-19..FR-27, NFR-08, NFR-09, NFR-10.
 | Prompt injection through tool builder | LLM → spec | LLM output is only a **ToolSpec JSON** validated against a schema; no tool calling with side effects; user confirms before save |
 | Account takeover | accounts | argon2id, rate limits, Turnstile, email verification, session rotation, optional TOTP, Cloudflare WAF |
 | XSS/CSRF | web | Jinja autoescape, Markdown sanitised (bleach/nh3 allow-list), CSP, CSRF tokens, SameSite cookies |
-| Data loss | app.db | Litestream continuous backup + restore drills (03 §6) |
+| Data loss | Postgres `app` | provider backups + encrypted off-provider dumps + restore drills (03 §6) |
+| Free LLM use / credit fraud | billing ledger, LLM spend | reserve-before-call (G-24), row-locked reservations, credit only from signature-verified idempotent webhooks, no client-side price trust (G-23) |
+| Payment data exposure | cards | hosted checkout (PCI SAQ-A), no card data stored; provider is sub-processor/MoR |
+| Webhook spoofing/replay | billing | signature verification, unique provider event id, Cloudflare rate limit on `/billing/webhook` |
 | SEC block for over-fetching | collector | host-wide rate limiter, UA (NFR-07) |
 | Regulatory exposure | platform | record-only (BR-14, G-20), disclaimers |
 
@@ -105,10 +108,11 @@ User tools are **declarative ToolSpecs** (a JSON DSL) — not arbitrary Python. 
 - JSON Schema + semantic validator (unknown identifiers, type checks, cost estimate) — errors are fed back to the LLM and shown to the user.
 
 ### 3.3 Runner isolation (NFR-09)
-- `iip-tool-runner.service`: separate Unix user `iip-runner`, systemd hardening: `PrivateNetwork=yes` (no network), `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `ReadOnlyPaths=` market.db + store (read-only), **no access to `app.db`** (file permissions), `MemoryMax=384M`, `CPUQuota=50%`, `TasksMax=16`, `SystemCallFilter=@system-service`, `RestrictAddressFamilies=AF_UNIX`.
-- Each run: wall-time limit (default 20 s), row/output limits, cancellation; one worker process per run slot (default 2 concurrent).
+- **v0.2 (ADR-015):** `iip-tool-runner` is a **private Serverless Container** (invocable only with a token held by the worker) built from a minimal image: `iip.tools.dsl` + snapshot reader only — no DB driver, no cloud SDK, no secrets, no DB role (G-25). Its only input data is the public **analysis snapshot** fetched through a short-lived pre-signed URL passed in the request (ADR-019); it has nothing private to leak and no credentials to misuse. Container limits: 1 vCPU / 1 GB, request timeout 30 s, max 4 instances. Non-root user, read-only root filesystem where supported.
+- Network egress from the container cannot be shown to be blocked on Serverless Containers (**not verified**, S-1); residual risk accepted because the interpreter has no I/O primitives (G-16) and the image has no network client beyond the snapshot fetch done by the harness before evaluation. Fallback option C (03 §3) restores the v0.1 systemd hardening (`PrivateNetwork=yes`, `ProtectSystem=strict`, `MemoryMax=384M`, `SystemCallFilter=@system-service`, …).
+- Each run: wall-time limit (default 20 s), row/output limits, cancellation; one run per container instance (concurrency 1).
 - Inputs needed from private space (e.g. a user's watchlist as universe) are resolved **by the worker** after authorization and passed as a list of company ids — the runner never sees other users' data.
-- Results returned via the socket and stored by the worker as `ToolRun` in the caller's space.
+- Results returned in the HTTPS response and stored by the worker as `ToolRun` in the caller's space.
 
 ### 3.4 Run flow
 
@@ -116,7 +120,7 @@ User tools are **declarative ToolSpecs** (a JSON DSL) — not arbitrary Python. 
 sequenceDiagram
   actor U as User
   participant W as iip-web
-  participant Q as job queue (app.db)
+  participant Q as job queue (Postgres app)
   participant K as iip-worker
   participant R as iip-tool-runner (sandbox)
   U->>W: Run tool (version v3, params)
@@ -124,38 +128,39 @@ sequenceDiagram
   W->>Q: enqueue ToolRun(pending)
   K->>Q: claim
   K->>K: resolve universe ids (authorized)
-  K->>R: {spec, inputs, limits} over Unix socket
-  R->>R: evaluate against market.db std_financials + prices (read-only)
+  K->>R: {spec, inputs, limits, snapshot_url} over HTTPS (private, token)
+  R->>R: fetch/cached analysis snapshot; evaluate (read-only)
   R-->>K: rows, metrics, usage
   K->>Q: ToolRun(done) + outbox ToolRunCompleted
   K-->>Watchlists: apply result if output.watchlist (FR-12)
   W-->>U: HTMX poll shows results
 ```
 
-### 3.5 Conversational builder (FR-11, ADR-010)
+### 3.5 Conversational builder (FR-11, BR-17, ADR-010, ADR-020)
+- **Premium gate:** starting a session and every LLM call require `Entitlements.can_use(tool_builder)` and a successful credit reservation; otherwise the UI shows the balance and a top-up link (402). Running tools is never gated by billing.
 - `BuilderSession` in Tools context; worker calls `LlmClient.complete` with: system prompt (DSL grammar, identifiers catalogue, examples, current spec), the conversation, and **structured output** = ToolSpec JSON Schema.
 - Loop: LLM proposes spec → validator → (errors back to LLM, max 3 repairs) → **dry run** on a 50-company sample in the runner → summary shown to user ("this tool keeps companies with P/E < 15 and …"); user saves as new `ToolVersion`.
 - The LLM never receives other users' data; only the user's own conversation and the public identifier catalogue. Prompt-injection impact is bounded to producing a (validated, sandboxed) spec.
 - Data processing agreement with the LLM vendor; prefer EU data residency/zero-retention options where available (Q-05).
 
-### 3.6 Quotas and cost control (NFR-10, A-09)
-Config values (defaults proposed, owner to set): tool runs per user/day (50), concurrent runs per user (1), builder messages per user/day (30), monthly LLM token budget per user and global hard cap (`llm_kill_switch` flag when reached), max universe size per run (all ~8k companies allowed but cost-estimated). Usage recorded per user; operator view.
+### 3.6 Quotas, metering and cost control (NFR-10, BR-17, A-09)
+v0.2: LLM cost is paid by users (BR-17), so LLM limits are **safety** limits, not budget limits. Config values (owner to set): tool runs per user/day (50), concurrent runs per user (1) — protect shared compute, free for all users; builder: per-user daily token ceiling (abuse/bug guard), global token-rate alarm and `llm_kill_switch`; max universe size per run (cost-estimated). Metering per LLM call into `UsageRecord` (ADR-020); user-facing usage page per session/month; operator view revenue vs vendor cost (RB-09).
 
 ## 4. Privacy and GDPR (NFR-08, FR-27)
 
 ### 4.1 Principles
-- EU hosting for all personal data (VPS + backups in EU, ADR-015); sub-processors listed in privacy notice (hosting, Cloudflare, email, LLM, error tracking). Cloudflare proxies traffic (DPA, standard contractual clauses).
+- EU hosting for all personal data (Scaleway fr-par serving plane + Hetzner DE/FI dumps, ADR-015); sub-processors listed in privacy notice (Scaleway, Hetzner, Cloudflare, email, LLM, payment provider/MoR, error tracking). The batch plane holds personal data only as client-side encrypted dumps. Cloudflare proxies traffic (DPA, standard contractual clauses).
 - Data minimisation: email, display name, optional bio; portfolios and plans are user content. No trackers.
 - Consent: terms + privacy notice acceptance at sign-up (versioned `Consent`); email notifications opt-out per kind.
 - Private by default (BR-06).
 
 ### 4.2 Export and deletion
 - `ExportMyData` → worker builds a ZIP (JSON per context + Markdown of posts/plans) and emails a time-limited download link (or in-app download), within minutes.
-- `DeleteAccount` → account `pending_deletion`, sessions revoked → **deletion saga** job steps, each idempotent and resumable: Portfolio & Plans (delete), Tools (delete private tools; tools copied by others remain theirs), Watchlists & Alerts (delete), Social (delete shares; posts and comments: delete or anonymise per **Q-10**), Clubs (leave all clubs; if super admin: **Q-10** — transfer or delete club), Notifications (delete), Identity (delete account row, keep a salted hash of the email for 30 days to prevent abuse re-signup — ASSUMPTION A-19). Backups age out within the retention window (35 days), stated in the privacy notice.
+- `DeleteAccount` → account `pending_deletion`, sessions revoked → **deletion saga** job steps, each idempotent and resumable: Portfolio & Plans (delete), Tools (delete private tools; tools copied by others remain theirs), Watchlists & Alerts (delete), Social (delete shares; posts and comments: delete or anonymise per **Q-10**), Clubs (leave all clubs; if super admin: **Q-10** — transfer or delete club), Notifications (delete), **Billing (pseudonymise ledger/usage records, keep for the statutory period A-27; release open reservations; unused credit per refund policy Q-14)**, Identity (delete account row, keep a salted hash of the email for 30 days to prevent abuse re-signup — ASSUMPTION A-19). Backups age out within the retention window (35 days; provider backup retention per S-1), stated in the privacy notice.
 - Operator tools: data subject request log.
 
 ### 4.3 Other controls
 - TLS everywhere (Cloudflare edge + origin cert / tunnel); HSTS; secure cookies.
-- Secrets in `/etc/iip/iip.env` 0640; least-privilege Unix users per process (`iip`, `iip-runner`, `fdc`).
-- Dependency scanning (pip-audit), SAST (ruff security rules / bandit), container-free but `systemd-analyze security` score target ≤ 3.0 for runner.
-- Audit log (`id_audit`) for security-relevant events: sign-in, password change, share/revoke, role changes, exports, deletions, operator moderation.
+- Secrets in Scaleway Secret Manager (serving) and `/etc/fdc/fdc.env` 0640 (batch); least-privilege DB roles per process (ADR-007); scoped API keys per bucket.
+- Dependency scanning (pip-audit), SAST (ruff security rules / bandit), container image scanning (e.g. Trivy in CI) for web/worker/runner images.
+- Audit log (`id_audit`) for security-relevant events: sign-in, password change, share/revoke, role changes, exports, deletions, operator moderation, billing adjustments and refunds.

@@ -78,7 +78,7 @@ Why (vs one big DB, and vs the app DB):
 - **Memory/disk friendly:** writes touch one small file at a time; no single multi-GB B-tree that must be vacuumed; a corrupt file affects one company and is rebuildable from raw.
 - **Read latency (NFR-03):** company pages read one small file (all its filings), typical query < 50 ms.
 - **Separation:** the app's transactional DB stays small and backup-friendly; the store is a derived, rebuildable asset with its own backup policy (ADR-018).
-- Cross-company analysis is never done on raw facts; it runs on Reconciliation's standardized table in `market.db` (BC-3), built incrementally from `filing_event`.
+- Cross-company analysis is never done on raw facts; it runs on Reconciliation's standardized table in Postgres schema `market` (BC-3; written by `iip reconcile` on the batch plane, v0.2), built incrementally from `filing_event`.
 - One-big-DB remains a fallback if M0 shows per-file overhead is excessive (e.g. > 30 % size overhead or > 50k files); the `StoreWriter`/`store_client` ports hide the layout.
 
 ### 3.1 Catalog schema (`catalog.db`)
@@ -205,6 +205,8 @@ sequenceDiagram
 
 ## 10. Read side for the app (FR-08, Open Host)
 
+v0.2: the store of record lives on the Hetzner batch VM; the serving plane reads **published immutable copies** from object storage via the same `store_client` API (`fdc publish`, ADR-019).
+
 `fdc.store_client` (shipped in the collector package, pinned by tag in the app) offers:
 - `statement(company_id, filing_key, stmt)` → lines ordered by `report, line` with `plabel`, values per period column (statement as presented).
 - `statements(company_id, annual_only=True, consolidated_only=True, stmt=...)` — annual = 10-K/20-F/40-F filings and `qtrs ∈ {0, 4}`; consolidated = `segments` empty and `coreg` empty (FR-08).
@@ -227,5 +229,5 @@ Goal: measured numbers before committing to full history, storage layout and ser
 | 6 | Same load with a one-big-DB layout (single SQLite) | size and query time vs per-company |
 | 7 | Extrapolate to 12 years (×48 quarters, with a growth factor from comparing an old and a recent quarter) | projected store size and backfill duration |
 
-**Go / no-go thresholds (proposed, owner may adjust):** peak RSS ≤ 512 MB; one quarter loads in ≤ 2 h on the target VPS; projected 12-year store ≤ the planned data volume (owner's disk budget, Q-02); idempotent rerun adds 0 rows; FSN reproduces ≥ 99 % of FSDS face-statement facts (else use FSDS for face statements).
+**Go / no-go thresholds (proposed, owner may adjust):** peak RSS ≤ 512 MB; one quarter loads in ≤ 2 h on the target batch VM; projected 12-year store fits the batch VM disk + ≤ 1 TB object storage within NFR-10 (03 §10); idempotent rerun adds 0 rows; FSN reproduces ≥ 99 % of FSDS face-statement facts (else use FSDS for face statements).
 Output: `docs/sizing/M0-report.md` in the collector repo, and ADR-003/ADR-004 updated with the numbers.

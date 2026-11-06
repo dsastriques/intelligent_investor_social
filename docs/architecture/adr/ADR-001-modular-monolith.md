@@ -19,4 +19,4 @@ Option 3. Processes are split only where a requirement needs it: `iip-tool-runne
 + one deploy, one DB transaction for cross-context invariants (no sagas except account deletion), cheap to run, easy for agents to navigate.
 + contexts can be extracted later (strangler fig) because they talk via facades/events.
 − discipline needed to keep boundaries: import-linter contracts and guidelines G-01..G-03 are mandatory CI checks.
-− single host scaling is vertical (acceptable up to NFR-01 target; see ADR-007).
+− v0.1: single host, vertical scaling. v0.2: web/worker/runner are separate managed containers that scale horizontally; the DB scales vertically (ADR-007, ADR-015).
