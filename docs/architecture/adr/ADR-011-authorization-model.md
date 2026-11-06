@@ -1,11 +1,11 @@
 # ADR-011: Authorization: spaces, roles, per-item shares
 
-- Status: Accepted
+- Status: Accepted (v0.4: public space and post visibility per BR-18; club ownership transfer and deletion per BR-08 v0.3)
 - Date: 2026-11-06
 - Deciders: architect (design mode); owner for items marked Proposed
 
 ## Context
-BR-06..BR-11, FR-19..FR-26: private spaces visible only to the owner, per-item sharing to community/specific users, club roles (super admin/admin/member) with precise rights, copies on import/mark-as-bought.
+BR-06..BR-11, BR-18, FR-19..FR-26: private spaces visible only to the owner, per-item sharing to community/specific users, club roles (super admin/admin/member) with precise rights, copies on import/mark-as-bought.
 
 ## Options
 1. Pure RBAC with global roles.
@@ -14,6 +14,11 @@ BR-06..BR-11, FR-19..FR-26: private spaces visible only to the owner, per-item s
 
 ## Decision
 Option 3, with the role/action table in 06 §2.2 and Club invariants in the domain (single super admin, who can eject whom).
+
+v0.4 additions:
+- **Space kinds** are now `private`, `club` and **`public`**. There is one platform-wide public (community) space.
+- **BR-18:** a post's visibility *is* its space; there is no separate visibility field. Posts in the public space are readable by anyone, **including anonymous visitors** (an `anonymous` principal with read-only access to public-space posts and their comments). Posts in a club space are readable only by that club's members.
+- **BR-08 (v0.3):** the super admin may `TransferOwnership` to any other member. They may not `Leave` without a prior transfer or `DeleteClub`. `DeleteAccount` is refused while the account owns any club for which no transfer-or-delete choice has been made (06 §2.2, §4.2).
 
 ## Consequences
 + simple mental model matching the requirements; one place to test (generated authorization matrix).

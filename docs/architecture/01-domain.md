@@ -21,7 +21,7 @@ Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.2: adds BC-11 Bil
 | **Collector run** | One execution of a collector with start/end, status, counts, cursor (BR-05, FR-07) |
 | **Provisional filing** | Loaded from per-filing XBRL before the bulk data set includes it; superseded later |
 | **Standardized financials** | Per company/fiscal year values of the screener's fields (`AnnualFinancials`), derived with a **mapping** and **lineage** |
-| **Space** | An ownership container: a user's **private space** or a **club space** |
+| **Space** | An ownership container: a user's **private space**, a **club space**, or the single platform-wide **public space** (community) |
 | **Item** | Anything owned by a space: portfolio, plan, tool, watchlist, analysis, document |
 | **Share** | A grant making an item visible (and for tools runnable) to the **community** or specific users (BR-07) |
 | **Portfolio** | A user's record of **positions**; changes only through **portfolio changes** with a **reason** (BR-01) |
@@ -32,8 +32,10 @@ Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.2: adds BC-11 Bil
 | **Tool** | Analysis definition (built-in or user-built **ToolSpec**), versioned; a **tool run** has inputs, outputs and data as-of |
 | **Built-in tool** | Tool ported from `the_intelligent_investor` (rules, guardrail, PE watch, peers, targets, MA alerts) |
 | **Tool builder session** | Conversation that produces/modifies a ToolSpec (FR-11) |
-| **Post / Comment** | Social write-up (with **embeds**) and replies |
-| **Club** | Investor Club (record-only); **super admin** (creator, exactly one), **admins**, **members** |
+| **Post / Comment** | Social write-up (with **embeds**) and replies; a post lives in the public space or a club space and is visible to that space's audience (BR-18) |
+| **Visitor** | Not signed-in reader; may read public-space posts and their comments only (BR-18) |
+| **Ownership transfer** | Super admin hands the super-admin role to another member (BR-08) |
+| **Club** | Investor Club (record-only); **super admin** (initially the creator, exactly one, transferable), **admins**, **members** |
 | **Mark as bought** | Member records a club watchlist company as bought into their own portfolio (BR-11) |
 | **Premium** | Entitlement to use the conversational tool builder (BR-17); in V1 = a billing account with available credit (ADR-020) |
 | **Credit** | Prepaid amount (EUR) on a user's **billing account**, spendable only on the platform's own metered LLM usage; not money held for investment (BR-14) |
@@ -197,11 +199,15 @@ Detail and schema in `05-data-collector.md`.
 ### 5.6 BC-8 Clubs
 
 - **Club** (root): name, description, *Membership(user_id, role ∈ {super_admin, admin, member}, joined_at)*, invitations/join requests, club space id.
-  - ⚑ **BR-08** exactly one `super_admin`, the creator (FR-22); super admin cannot be ejected or demoted (ownership transfer is out of V1 scope — Q-10).
+  - ⚑ **BR-08** exactly one `super_admin`: the creator at creation (FR-22), afterwards whoever received an ownership transfer. Nobody can eject or demote the super admin.
+  - ⚑ **BR-08 (v0.3)** `TransferOwnership(to)` only by the super admin, only to another **current member** (any role). In one step the target becomes `super_admin` and the former super admin becomes `member` (A-33: immediate, with notification).
+  - ⚑ **BR-08** `Leave` by the super admin is rejected (`OwnershipDecisionRequired`). They must first transfer ownership or `DeleteClub`.
+  - ⚑ `DeleteClub` only by the super admin. The club becomes `deleted` and its space items and posts are removed by a job; copies in members' private spaces stay (A-34).
   - ⚑ Only super admin grants/revokes admin; only super admin ejects an admin.
   - ⚑ Admins (and super admin) invite, accept requests, eject members.
   - ⚑ Members: read everything in the club space, comment only (BR-09).
-  - ▶ `CreateClub`, `Invite`, `RequestToJoin`, `Accept`, `Eject`, `GrantAdmin`, `RevokeAdmin`, `Leave`. ⇒ `MemberJoined`, `MemberEjected`, `AdminGranted`, `AdminRevoked`.
+  - ▶ `CreateClub`, `Invite`, `RequestToJoin`, `Accept`, `Eject`, `GrantAdmin`, `RevokeAdmin`, `TransferOwnership`, `Leave`, `DeleteClub`. ⇒ `MemberJoined`, `MemberEjected`, `AdminGranted`, `AdminRevoked`, `OwnershipTransferred`, `ClubDeleted`.
+  - Query `clubs_owned_by(account)` → used by Identity's `DeleteAccount` precondition (FR-27).
 - Club documents are ordinary items owned by the **club space**: Watchlist (BC-6), InvestmentPlan (BC-5, company or club scope), **Analysis**/**Document** (rich text with embeds), Tools (BC-4).
 - **MarkAsBought** (application service, BR-11 / FR-26), one transaction:
   1. Policy: caller is a member; entry is on the club watchlist.
@@ -212,16 +218,20 @@ Detail and schema in `05-data-collector.md`.
 ### 5.7 BC-7 Social
 
 - **Share** (root per item+audience): item ref, audience (`community` | `user:<id>`), permissions (`read`, `run` for tools), created_by, revoked_at. ⚑ Only the owning space's owner (private) or club admins (club items) create/revoke shares (BR-07, FR-19).
-- **Post** (root): author, title, body (Markdown), *Embed* refs, visibility (A-R11), status (`visible` | `hidden_by_operator`). **Comment**: author, body, status. ⚑ An embed renders only if the viewer may read the embedded item; otherwise a placeholder (BR-06).
+- **Post** (root): author, **space** (`public` | `club:<id>`), title, body (Markdown), *Embed* refs, status (`visible` | `hidden_by_operator`). **Comment**: author, body, status.
+  - ⚑ **BR-18** visibility = the post's space. There is no per-post visibility field, and the space never changes after creation. Public-space posts are readable by everyone, including visitors; club-space posts only by that club's members.
+  - ⚑ Posts are created in the public space by any signed-in user, and in a club space by its admins or super admin (A-32). Signed-in users who can read a post may comment, so visitors cannot comment.
+  - ⚑ An embed renders only if the viewer may read the embedded item; otherwise a placeholder is shown (BR-06, A-31).
 - **ContentReport**: reporter, target, reason, status. ▶ `HideContent` by operator (FR-21).
 - Comments on club items use the same Comment entity with `target = club item`.
 
 ### 5.8 BC-9 Identity & Access and BC-10 Notifications
 
 - **Account** (root): email (unique, verified), password hash, display name, profile, consents (*Consent(kind, version, at)*), roles (`operator` optional), status (`active` | `pending_deletion` | `deleted`).
-  - ▶ `SignUp`, `VerifyEmail`, `SignIn`, `SignOut`, `ExportMyData`, `DeleteAccount` (FR-27).
+  - ▶ `SignUp`, `VerifyEmail`, `SignIn` (password), `RequestMagicLink`, `SignInWithMagicLink`, `ResetPassword`, `SignOut`, `ExportMyData`, `DeleteAccount` (FR-27, ADR-016).
+  - ⚑ **FR-27/BR-08** `DeleteAccount(decisions)` is rejected with `OwnershipDecisionRequired(club_ids)` unless every club where the account is super admin has a decision: `transfer_to:<member>` or `delete`. The saga executes those decisions first.
   - ↻ `DeleteAccount` → saga over contexts (06 §4.2).
-- **Space**: id, kind (`private` | `club`), owner (account or club). Shared kernel *Principal*, *Policy*.
+- **Space**: id, kind (`private` | `club` | `public`), owner (account, club, or platform for the single public space). Shared kernel *Principal* (incl. `anonymous` for visitors), *Policy*.
 - **Notification**: recipient, kind, payload, read_at; **EmailDelivery**: status, attempts. **Preferences** per kind/channel (FR-18).
 
 ### 5.9 BC-11 Billing & Entitlements (BR-17, FR-29, ADR-020)
@@ -255,7 +265,7 @@ Detail and schema in `05-data-collector.md`.
 | ToolRunCompleted | Tools | Watchlists (FR-12), Notifications |
 | AlertTriggered | Alerts | Notifications |
 | CommentAdded, PostPublished | Social | Notifications |
-| MemberJoined/Ejected, AdminGranted/Revoked, Invited | Clubs | Notifications, Identity (policy cache) |
+| MemberJoined/Ejected, AdminGranted/Revoked, Invited, OwnershipTransferred, ClubDeleted | Clubs | Notifications, Identity (policy cache), Social (club posts removed on ClubDeleted) |
 | ClubCompanyMarkedBought | Clubs | Notifications (optional to club) |
 | CreditToppedUp, CreditLow, CreditExhausted, UsageCharged, RefundIssued | Billing | Notifications, Tools (resume/pause builder sessions), operator metrics |
 | AccountDeletionRequested | Identity | all contexts (deletion saga; Billing pseudonymises) |

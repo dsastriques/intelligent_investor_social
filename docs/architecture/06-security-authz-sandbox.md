@@ -1,6 +1,6 @@
 # 06 — Security, authorization, tool sandbox and GDPR (topics T4, T6, part of T8)
 
-Serves BR-06..BR-11, BR-17, FR-11, FR-19..FR-29, NFR-08, NFR-09, NFR-10. v0.2: runner isolation moved to a private container (ADR-015), billing threats and premium gating added (ADR-020).
+Serves BR-06..BR-11, BR-17, BR-18, FR-11, FR-19..FR-29, NFR-08, NFR-09, NFR-10. v0.2: runner isolation moved to a private container (ADR-015), billing threats and premium gating added (ADR-020).
 
 ## 1. Threat model (summary)
 
@@ -23,7 +23,8 @@ Serves BR-06..BR-11, BR-17, FR-11, FR-19..FR-29, NFR-08, NFR-09, NFR-10. v0.2: r
 
 ### 2.1 Concepts
 - **Principal**: `account_id`, platform roles (`operator`), club memberships (club_id → role) — loaded per request (cached ≤ 60 s, invalidated on `Member*`/`Admin*` events).
-- **Space**: `private:<account_id>` or `club:<club_id>`. Every item (portfolio, plan, tool, watchlist, analysis, document, alert rule) has exactly one `space_id`.
+- **Space**: `private:<account_id>`, `club:<club_id>` or `public` (one platform-wide community space, BR-18). Every item (portfolio, plan, tool, watchlist, analysis, document, alert rule, post) has exactly one `space_id`.
+- **Principal** may be `anonymous` (visitor): it can only `read` posts and comments in the `public` space and the landing page; everything else is denied.
 - **Share**: `(item_ref, audience = community | user:<id>, permission ⊆ {read, run})`.
 - **Actions**: `read`, `comment`, `edit`, `delete`, `share`, `run` (tools), `copy` (tools/plans/analyses), `manage_members`, `manage_admins`.
 
@@ -41,10 +42,17 @@ allowed(principal, action, item):
       if action == copy and item.type in (tool, plan, analysis): return True   # A-R9
       if action == comment and item.type in (portfolio, analysis, tool): return True  # comments on shared items (A-16)
       return False
+  if space.kind == public:                                              # BR-18 (only posts live here)
+      if action == read: return True                                     # anyone, incl. anonymous visitors
+      if action == comment: return not principal.anonymous               # A-30
+      if action in (edit, delete): return principal.id == item.author
+      return False
+  if principal.anonymous: return False
   if space.kind == club:
       role = principal.role_in(space.club)                               # None if not a member
       if role is None: return community/user share rules as above (club may share items too)
-      if action in (read, comment): return True                          # BR-09
+      if action in (read, comment): return True                          # BR-09; BR-18 club posts members-only
+      if action == create and item.type == post: return role in (admin, super_admin)   # A-32
       if action == run and item.type == tool: return True                # members run club tools (A-17)
       if action == copy: return True                                     # BR-11 copies, BR-10 imports
       if action in (edit, delete, share): return role in (admin, super_admin)   # BR-08 admins edit documents
@@ -60,10 +68,13 @@ Club membership management (domain invariants in `Club`, checked again by policy
 | eject **admin** / revoke admin | ✓ | ✗ | ✗ |
 | grant admin | ✓ | ✗ | ✗ |
 | eject super admin | ✗ (nobody) | ✗ | ✗ |
+| transfer super-admin ownership to any other member (BR-08, FR-23) | ✓ | ✗ | ✗ |
+| delete club (FR-23) | ✓ | ✗ | ✗ |
+| create post in club space (A-32) | ✓ | ✓ | ✗ |
 | edit club watchlist, plan, analyses, documents, tools; import tool (FR-25) | ✓ | ✓ | ✗ |
 | read all club documents; comment | ✓ | ✓ | ✓ |
 | mark as bought into own portfolio (FR-26) | ✓ | ✓ | ✓ |
-| leave club | ✗ (Q-10) | ✓ | ✓ |
+| leave club | only after transfer or delete (BR-08) | ✓ | ✓ |
 
 ### 2.3 Sharing (BR-07, FR-19)
 - Owner (or club admin for club items) creates/revokes shares. Revoke is immediate (next request).
@@ -156,7 +167,7 @@ v0.2: LLM cost is paid by users (BR-17), so LLM limits are **safety** limits, no
 
 ### 4.2 Export and deletion
 - `ExportMyData` → worker builds a ZIP (JSON per context + Markdown of posts/plans) and emails a time-limited download link (or in-app download), within minutes.
-- `DeleteAccount` → account `pending_deletion`, sessions revoked → **deletion saga** job steps, each idempotent and resumable: Portfolio & Plans (delete), Tools (delete private tools; tools copied by others remain theirs), Watchlists & Alerts (delete), Social (delete shares; posts and comments: delete or anonymise per **Q-10**), Clubs (leave all clubs; if super admin: **Q-10** — transfer or delete club), Notifications (delete), **Billing (pseudonymise ledger/usage records, keep for the statutory period A-27; release open reservations; unused credit per refund policy Q-14)**, Identity (delete account row, keep a salted hash of the email for 30 days to prevent abuse re-signup — ASSUMPTION A-19). Backups age out within the retention window (35 days; provider backup retention per S-1), stated in the privacy notice.
+- `DeleteAccount` → account `pending_deletion`, sessions revoked → **deletion saga** job steps, each idempotent and resumable: Portfolio & Plans (delete), Tools (delete private tools; tools copied by others remain theirs), Watchlists & Alerts (delete), Social (delete shares; own posts deleted, comments in others' threads anonymised — A-35, Q-10a), Clubs (**precondition, FR-27/BR-08:** `DeleteAccount` is refused until the user has chosen *transfer to member X* or *delete club* for every club they own; the UI lists those clubs. The saga's first step executes the choices, then the user leaves all other clubs), Notifications (delete), **Billing (pseudonymise ledger/usage records, keep for the statutory period A-27; release open reservations; unused credit refunded on request within the legal window (ADR-020, Q-14b))**, Identity (delete account row, keep a salted hash of the email for 30 days to prevent abuse re-signup — ASSUMPTION A-19). Backups age out within the retention window (35 days; provider backup retention per S-1), stated in the privacy notice.
 - Operator tools: data subject request log.
 
 ### 4.3 Other controls

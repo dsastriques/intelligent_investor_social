@@ -22,11 +22,11 @@ Processes (all from `iip` package unless noted):
 
 | Repo | Visibility | Contains |
 |---|---|---|
-| `dsastriques/financial-data-collector` | public | `fdc` package: collectors, store schema (published language), `store_client`, deploy units for collector jobs, sizing reports |
-| `dsastriques/intelligent_investor_social` | public | `iip` app: all bounded contexts except Filings, design docs, deploy, e2e tests |
-| `dsastriques/the_intelligent_investor` | private | screener; its pure core (`models`, `metrics`, `rules`, `guardrail`, `ranking`, `prices`) consumed as a library (ADR-008, Q-06) |
+| `dsastriques/financial-data-collector` | **private** (owner, v0.4) | `fdc` package: collectors, store schema (published language), `store_client`, deploy units for collector jobs, sizing reports |
+| `dsastriques/intelligent_investor_social` | **private** (owner, v0.4) | `iip` app: all bounded contexts except Filings, design docs, deploy, e2e tests |
+| `dsastriques/the_intelligent_investor` | private | screener; its pure core (`models`, `metrics`, `rules`, `guardrail`, `ranking`, `prices`) consumed as a pinned private git dependency (ADR-008) |
 
-The app depends on `fdc` (store client only) by git tag in `pyproject.toml` (`fdc @ git+https://github.com/dsastriques/financial-data-collector@v0.x`). Raw data never goes to GitHub (ADR-018).
+The app depends on `fdc` (store client only) and the screener by git tag in `pyproject.toml` (`fdc @ git+https://github.com/dsastriques/financial-data-collector@v0.x`, `the-intelligent-investor @ git+https://github.com/dsastriques/the_intelligent_investor@vX.Y.Z`). All repos are private, so CI and image builds use a fine-grained read-only token as a BuildKit secret (ADR-008). Raw data never goes to GitHub (ADR-018).
 
 ## 3. Technology choices
 
@@ -49,7 +49,7 @@ The app depends on `fdc` (store client only) by git tag in `pyproject.toml` (`fd
 
 ```
 intelligent_investor_social/
-  pyproject.toml            # package "iip"; deps incl. fdc (git tag), screener core (Q-06)
+  pyproject.toml            # package "iip"; deps incl. fdc (git tag), the-intelligent-investor (git tag, ADR-008)
   alembic/                  # migrations for Postgres schemas app and market (two version tables)
   src/iip/
     shared/                 # shared kernel: ids, Money, Clock, errors, Principal, SpaceId, Policy protocol, events
@@ -241,7 +241,7 @@ Company page: catalog lookup + one company file + std read model → server time
 
 ## 14. Authentication and authorization (summary; detail in 06)
 
-- AuthN (ADR-016): email + password (argon2id), email verification, password reset, optional TOTP for operator; server-side sessions (`id_session` table, opaque cookie `HttpOnly; Secure; SameSite=Lax`); rate-limited sign-in; Cloudflare Turnstile on sign-up.
+- AuthN (ADR-016, accepted): email + password (argon2id), mandatory email verification, optional passwordless magic link (single-use, 15 min, hashed token), password reset, optional TOTP for operator; server-side sessions (`id_session` table, opaque cookie `HttpOnly; Secure; SameSite=Lax`); rate-limited sign-in; Cloudflare Turnstile on sign-up.
 - AuthZ (ADR-011): policies in the **application layer**; repositories take the `Principal` and apply visibility filters (defence in depth). Service-to-service: worker → runner via private-container token; each process has its own least-privilege Postgres role (ADR-007); batch plane writes only `market` tables via `iip_batch`; published store objects are read-only for the serving plane.
 
 ## 15. Cross-cutting
@@ -276,6 +276,7 @@ Company page: catalog lookup + one company file + std read model → server time
 - **G-18** ruff, ruff format, mypy strict, import-linter, pytest green before every commit; CI never fetches market/SEC data (C-8).
 - **G-19** Every external data source carries `source` on stored rows; the licence (or the owner's risk acceptance, ADR-012) of each source is recorded in an ADR (NFR-11).
 - **G-20** No code that places orders, connects to brokers, holds or moves investment money, or gives personalised advice (BR-14). The only payment integration allowed is BC-11 charging for the platform's own premium usage (FR-29), via `PaymentGateway`.
+- **G-26** Post visibility is derived from the post's space only (BR-18); no code path may expose club-space posts outside the club or private items to `anonymous`.
 - **G-21** Comments and docstrings explain *why*; every user-visible automated change (watchlist from tool, alert) carries a plain-English reason (screener rule 4).
 - **G-22** Design docs updated in the same PR when implementation changes the design; new significant decisions get an ADR.
 - **G-23** Money in Billing: integer EUR micros, never floats; every ledger change via `Metering`/`Billing` commands in a UoW; no `UPDATE`/`DELETE` on `bl_ledger_entry`; credit granted only from verified idempotent provider events; no card data stored (hosted checkout).

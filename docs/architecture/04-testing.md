@@ -48,9 +48,11 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | BR-06 | e2e | `tests/e2e/test_privacy.py::test_other_user_cannot_open_portfolio_url` | planned |
 | BR-07 | unit | `tests/unit/social/test_share.py::test_share_community`, `::test_share_specific_user`, `::test_revoke`, `::test_recipient_can_copy_not_edit_tool` | planned |
 | BR-07 | e2e | `tests/e2e/test_sharing.py::test_share_tool_and_recipient_runs_copy` | planned |
-| BR-08 | unit | `tests/unit/clubs/test_club.py::test_creator_is_single_super_admin`, `::test_only_super_admin_grants_admin`, `::test_admin_cannot_eject_admin`, `::test_admin_ejects_member`, `::test_super_admin_cannot_be_ejected`, `::test_member_cannot_edit_documents` | planned |
-| BR-08 | e2e | `tests/e2e/test_clubs.py::test_roles_lifecycle` | planned |
+| BR-08 | unit | `tests/unit/clubs/test_club.py::test_creator_is_single_super_admin`, `::test_only_super_admin_grants_admin`, `::test_admin_cannot_eject_admin`, `::test_admin_ejects_member`, `::test_super_admin_cannot_be_ejected`, `::test_member_cannot_edit_documents` , `::test_transfer_ownership_to_any_member`, `::test_transfer_to_non_member_rejected`, `::test_only_super_admin_transfers`, `::test_former_super_admin_becomes_member`, `::test_super_admin_leave_rejected_without_decision`, `::test_delete_club_only_by_super_admin` | planned |
+| BR-08 | e2e | `tests/e2e/test_clubs.py::test_roles_lifecycle`, `::test_transfer_ownership_then_leave`, `::test_delete_club_removes_club_items_keeps_member_copies` | planned |
 | BR-09 | unit | `tests/unit/shared/test_authz_matrix.py::test_club_members_read_and_comment_all_documents` | planned |
+| BR-18 | unit | `tests/unit/shared/test_authz_matrix.py::test_public_space_post_readable_by_anonymous`, `::test_anonymous_cannot_comment`, `::test_club_post_hidden_from_non_members_and_anonymous`, `::test_anonymous_denied_everything_else`; `tests/unit/social/test_post.py::test_post_space_immutable`, `::test_member_cannot_create_club_post` | planned |
+| BR-18 | e2e | `tests/e2e/test_posts.py::test_visitor_reads_public_post`, `::test_club_post_only_for_members` | planned |
 | BR-10 | unit | `tests/unit/tools/test_tool.py::test_import_to_club_creates_copy_with_provenance`, `::test_tool_built_in_club_space` | planned |
 | BR-11 | integration | `tests/integration/clubs/test_mark_as_bought.py::test_creates_position_with_reason_and_copies`, `::test_copies_editable_originals_unchanged`, `::test_atomic_on_failure` | planned |
 | BR-11 | e2e | `tests/e2e/test_clubs.py::test_mark_as_bought_flow` | planned |
@@ -78,7 +80,7 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | FR-12 | `tests/integration/tools/test_tool_to_watchlist.py` |
 | FR-15 | `tests/integration/portfolio/test_plan_review.py::test_machine_expectations_evaluated` |
 | FR-17/18 | `tests/integration/alerts/test_alerts.py::test_price_move_fires_once_per_state_change`, `::test_email_and_inapp_delivered_idempotently` |
-| FR-27 | `tests/integration/identity/test_gdpr.py::test_export_contains_all_contexts`, `::test_delete_saga_removes_personal_data_resumable`, `::test_billing_records_pseudonymised_not_deleted` |
+| FR-27 | `tests/integration/identity/test_gdpr.py::test_export_contains_all_contexts`, `::test_delete_saga_removes_personal_data_resumable`, `::test_billing_records_pseudonymised_not_deleted`, `tests/unit/identity/test_delete_account.py::test_refused_until_decision_for_each_owned_club`, `::test_decisions_executed_first_in_saga`; `tests/integration/identity/test_magic_link.py::test_single_use_and_expiry`, `::test_unverified_email_cannot_sign_in` |
 | FR-29 | `tests/integration/billing/test_metering.py::test_usage_record_per_call_with_price_table_version`, `::test_charge_uses_vendor_reported_tokens_and_margin`, `::test_expired_reservations_released`; `tests/unit/billing/test_price_table.py` |
 | NFR-11 (owner decision: Yahoo V1) | `tests/integration/market/test_prices.py::test_every_price_row_has_source`, `::test_stale_price_flagged_and_alert_suppressed`; `tests/unit/test_architecture.py::test_yfinance_imported_only_by_yahoo_adapter`; e2e `test_price_attribution_visible` |
 

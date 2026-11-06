@@ -1,6 +1,6 @@
 # ADR-010: LLM for the conversational tool builder (premium, user-paid tokens)
 
-- Status: Proposed. Vendor and model are the owner's decision (Q-05). Premium and metering follow BR-17 and FR-29 (owner, 2026-11-06), with billing in ADR-020.
+- Status: **Accepted** (owner, 2026-11-06, Q-05: Anthropic Claude, Haiku-class default, Sonnet-class for repairs). Premium and metering follow BR-17 and FR-29, with billing in ADR-020.
 - Date: 2026-11-06 (v0.2)
 - Deciders: architect (design mode); owner for vendor, price and margin
 
@@ -16,7 +16,7 @@
 3. Self-hosted open model (needs a GPU; not affordable).
 
 ## Decision
-Option 1 (proposed) behind the `LlmClient` port. v0.2 changes:
+Option 1 behind the `LlmClient` port: **Anthropic Claude**. The default model is **Haiku-class** for spec generation. **Sonnet-class** is used for repair turns after the first validator failure (at most 3 repairs). Model ids live in config (`llm.models.default`, `llm.models.repair`) and are pinned per price-table version. Exact ids and prices are verified at M5 against Anthropic's docs; the first-party price page was not reachable on 2026-11-06. A DPA and the zero/short-retention settings are part of M5 set-up. v0.2 changes:
 1. **Entitlement check before every builder session and message** (ADR-020): `Entitlements.can_use(user, feature="tool_builder")` requires an active premium entitlement and an available credit balance ≥ `billing.session_min_credit` (config).
 2. **Reserve, call, settle** for every LLM call. Before the call, reserve the worst-case cost (input tokens counted locally + `max_tokens` output, at the current price table and margin). Call the vendor. Then settle with the **vendor-reported usage** (input, output, cache-write and cache-read tokens) and release the rest. If the reservation fails, the session pauses with "out of credit". A call is never started that the user's credit cannot cover.
 3. **Metering record** per call: user, session, tool, model, token counts, vendor request id, price-table version, cost in USD, charged EUR (ECB rate of the day, margin). Users see totals per session and per month in-app (FR-29).

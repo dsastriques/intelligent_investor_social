@@ -1,6 +1,17 @@
 # 00 — Overview: Intelligent Investor Pro (V1)
 
-Status: **design v0.3 (2026-11-06)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.2**: owner answers Q-01..Q-04, new BR-17/FR-29, revised NFR-01/NFR-10/NFR-11) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+Status: **design v0.4 (2026-11-06)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.3**: adds BR-18, changes BR-08, FR-23, FR-27; v0.2 added BR-17/FR-29) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+
+## What changed in v0.4
+
+Owner answers 2026-11-06 (requirements v0.3):
+- **Q-08** sign-in: email + password with verification, magic link optional (ADR-016 Accepted).
+- **Q-09 → BR-18**: post visibility follows the space. Public-space posts are visible to everyone, visitors included; club-space posts to members only (ADR-011, 01 §5.7, 06 §2).
+- **Q-10 → BR-08/FR-23/FR-27**: the super admin can transfer ownership to any member, must transfer or delete the club before leaving, and account deletion is blocked until that choice is made for each owned club (01 §5.6, 06 §2.2/§4.2). This replaces v0.3's auto-transfer recommendation.
+- **Q-06**: all repos become private; the screener is consumed as a pinned **private git dependency**, with no core extraction (C-7, ADR-008, R-07 reduced).
+- **Q-05**: Anthropic Claude, Haiku-class default and Sonnet-class for repairs (ADR-010 Accepted).
+- **Q-12**: tasks are GitHub issues in `intelligent_investor_social` (architect.config.md); M0 issues created (07).
+- **Q-14b**: €10/25/50, 20 % margin, 12-month expiry confirmed (ADR-020).
 
 ## What changed in v0.3
 
@@ -53,7 +64,7 @@ Owner decisions 2026-11-06 (via coordinator): **Q-02b** hosting option A accepte
 | C-4 | Raw SEC zips never committed to GitHub | brief / research |
 | C-5 | Bulk loads must stream (memory-bounded loaders; the 1 GB server is no longer the target, but streaming stays) | research |
 | C-6 | Personal data hosted in the EU (owner in NL, GDPR) | NFR-08 |
-| C-7 | `intelligent_investor_social` and `financial-data-collector` are **public** repos; `the_intelligent_investor` is **private** | GitHub (checked 2026-11-06) |
+| C-7 | All three repos (`intelligent_investor_social`, `financial-data-collector`, `the_intelligent_investor`) are **private** (owner decision 2026-11-06, Q-06; the two product repos are switched by the owner in GitHub settings). Private code is consumed directly via pinned git dependencies; CI needs read tokens | owner, Q-06 |
 | C-8 | Data jobs run on the server (batch plane), never on GitHub Actions (data sites block shared IPs) | existing repo rule |
 | C-9 | Platform cost €50–200/month incl. price vendor and email, excl. LLM tokens | NFR-10 |
 
@@ -89,7 +100,7 @@ flowchart LR
   mail[(Transactional email<br/>Scaleway TEM)]
   pay[(Stripe<br/>Checkout + webhooks)]
   fx[(ECB FX reference rates)]
-  visitor -->|landing, public content| app
+  visitor -->|landing, public-space posts BR-18| app
   user -->|HTTPS via Cloudflare| app
   operator -->|moderation, ops| app
   fdc -->|User-Agent, <=10 req/s| sec
@@ -158,7 +169,7 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | BR-05 | `collector_run` + `collected_item(source, item_key)`; loads idempotent per item and per `adsh`; incremental by default | 05 §6; ADR-005 |
 | BR-06 | Private space, owner-only `SpacePolicy`; repositories always filter by viewer | 06 §2; ADR-011 |
 | BR-07 | `Share` grants (community or user) with `read`/`run`; recipients can copy (ASSUMPTION A-07) | 06 §2.3; ADR-011 |
-| BR-08 | `Club` aggregate: exactly one super admin; role transitions guarded in domain | 01 §5.6; 06 §2.4; ADR-011 |
+| BR-08 | `Club` aggregate: exactly one super admin (creator, then transferee); `TransferOwnership` to any member (former super admin becomes member); `Leave` by super admin refused unless transferred or club deleted; `DeleteClub` by super admin; role transitions guarded in domain | 01 §5.6; 06 §2.2; ADR-011 |
 | BR-09 | Club space policy: every member may read all club documents and comment | 06 §2.4 |
 | BR-10 | `ImportToolToClub` copies a `Tool` version into the club space with provenance | 01 §5.3; 06 §2.4 |
 | BR-11 | `MarkAsBought` application service: one DB transaction creating a position (with reason) + copies of club plan/analysis into private space | 01 §5.6; 02 §6 |
@@ -167,6 +178,7 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | BR-14 | Confirmed by owner 2026-11-06. No order/broker adapters; G-20 forbids moving investment money; the only payment integration is BC-11 for platform fees (FR-29); credits non-transferable, non-withdrawable; disclaimer in UI | 02 §16; ADR-001, ADR-020 |
 | BR-15 | One watcher instance per sector (`fdc-watch@<sector>`); SIC→sector map | 05 §7; ADR-006 |
 | BR-16 | `SourceCollector` plug-ins; FFIEC call report collector; every row carries `source` | 05 §8; ADR-002 |
+| BR-18 | Post belongs to exactly one space (`public` or `club:<id>`); policy: public-space posts + comments readable by any principal incl. `anonymous` visitor; club-space posts only by members; no per-post visibility field; embeds still checked per viewer | 01 §5.7; 06 §2.2; ADR-011 |
 | BR-17 | Builder sessions and every LLM call gated by `Entitlements.can_use` + credit `Reservation` (invariant: available ≥ 0); `RunTool` has no billing check; club builds billed to acting admin (A-25) | 01 §5.3, §5.9; 06 §3.5; ADR-010, ADR-020; G-24 |
 
 ### Functional requirements
@@ -192,14 +204,14 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | FR-17 | `AlertRule` types: price move, MA/value signal, new filing, restatement; evaluated after price refresh / on collector events | 01 §5.5; ADR-013 |
 | FR-18 | Notifications context: in-app inbox + email (outbox, retries, preferences) | 01 §5.8; ADR-017 |
 | FR-19 | `Share` / `RevokeShare` commands | 06 §2.3 |
-| FR-20 | `Post` + `Comment` with embeds (`portfolio:`, `tool:`, `company:`) that respect embed authorization | 01 §5.7 |
+| FR-20 | `Post` (in public or club space, BR-18) + `Comment` with embeds (`portfolio:`, `tool:`, `company:`) that respect embed authorization | 01 §5.7 |
 | FR-21 | `Report` + operator `HideContent` | 01 §5.7 |
 | FR-22 | `CreateClub` → creator becomes super admin | 01 §5.6 |
-| FR-23 | Invite / request / accept / eject / grant / revoke admin per BR-08 | 01 §5.6; 06 §2.4 |
+| FR-23 | Invite / request / accept / eject / grant / revoke admin / **transfer super-admin ownership** / **delete club** per BR-08 | 01 §5.6; 06 §2.2; 04 §4 |
 | FR-24 | Club space documents: watchlist, plan, analyses, documents, tools; comments | 01 §5.6 |
 | FR-25 | `ImportToolToClub` | 01 §5.3 |
 | FR-26 | `MarkAsBought` | 01 §5.6 |
-| FR-27 | Identity context: sign-up/in, profile, export, delete (GDPR) | 06 §4; ADR-016 |
+| FR-27 | Identity: sign-up, email + password with verification, optional magic link, profile, export, delete (GDPR); `DeleteAccount` precondition: a transfer-or-delete decision recorded for every owned club, executed as the first saga step | 01 §5.8; 06 §4.2; ADR-016 |
 | FR-28 | Server-rendered web UI (Jinja + HTMX) | 02 §3; ADR-014 |
 | FR-29 | BC-11: prepaid credit ledger, top-up via hosted checkout + verified idempotent webhooks, `UsageRecord` per LLM call (tokens, price-table version, margin), usage page per session/month, block at zero credit; Stripe Checkout + signature-verified webhooks; owner handles VAT/OSS | 01 §5.9; 02 §5–6; 03 §7 RB-09; ADR-020 |
 
@@ -222,7 +234,7 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 
 ## 6. Assumptions (design proceeds on these; owner/coordinator to confirm)
 
-From requirements v0.2: A-R1 design for ~10k users (NFR-01; ≤100 beta now confirmed) · A-R2 p95 < 2 s (NFR-03) · A-R3 new filings visible within 24 h (NFR-04) · A-R4 EOD prices (NFR-05) · A-R5 99 % monthly availability (NFR-06) · A-R7 alerts in-app + email (FR-18) · A-R8 basic moderation (FR-21) · A-R9 recipients copy shared tools, not edit (BR-07) · A-R11 posts public vs members-only undecided · A-R12 running built-in and already-built tools stays free (BR-17). Confirmed and no longer assumptions: beta size (Q-01), budget (Q-02), record-only/no advice (Q-04).
+From requirements v0.2: A-R1 design for ~10k users (NFR-01; ≤100 beta now confirmed) · A-R2 p95 < 2 s (NFR-03) · A-R3 new filings visible within 24 h (NFR-04) · A-R4 EOD prices (NFR-05) · A-R5 99 % monthly availability (NFR-06) · A-R7 alerts in-app + email (FR-18) · A-R8 basic moderation (FR-21) · A-R9 recipients copy shared tools, not edit (BR-07) · A-R12 running built-in and already-built tools stays free (BR-17). Confirmed and no longer assumptions: beta size (Q-01), budget (Q-02), record-only/no advice (Q-04).
 
 Added by the architect:
 
@@ -257,6 +269,12 @@ Added by the architect:
 | A-27 | Billing ledger, usage records and provider invoice refs are retained (pseudonymised) for the NL statutory bookkeeping period (7 years, to be confirmed by accountant) after account deletion | ADR-020; 06 §4.2 |
 | A-28 | Single-node managed Postgres (no HA standby) is acceptable for the beta under the 99 % SLO | 03 §5 |
 | A-29 | Scaleway fr-par is acceptable EU hosting for GDPR (NL owner); nl-ams used if all needed products are available there | ADR-015 |
+| A-30 | Comments on public-space posts are readable by visitors too; only signed-in users comment | 06 §2.2 |
+| A-31 | Visitors see embedded companies (public data) in public posts; embedded portfolios/tools/analyses render as a placeholder unless shared with the community, and community shares remain signed-in only | 06 §2.2 |
+| A-32 | Posts are created only in the public space or a club space (not in private spaces); in a club space only admins and the super admin create posts, while members comment (consistent with BR-08 "read-only plus comments") | 01 §5.7 |
+| A-33 | Ownership transfer takes effect immediately with a notification to the new super admin (no acceptance step) | 01 §5.6 |
+| A-34 | Deleting a club deletes the club-space items and posts; copies already in members' private spaces (BR-10/BR-11) remain; members are notified | 01 §5.6 |
+| A-35 | On account deletion the user's own posts are deleted and their comments in others' threads are anonymised ("deleted user") — the v0.3 recommendation, not yet confirmed (Q-10a) | 06 §4.2 |
 
 ## 7. Risks
 
@@ -268,7 +286,7 @@ Added by the architect:
 | R-04 | Reconciliation mapping (as-reported → standardized) wrong for many filers; built-in tools mislead | user trust | lineage per field, coverage metrics, overlap checks against the screener's existing EDGAR output, "data coverage" shown with results (ADR-008) |
 | R-05 | Sandbox escape or resource exhaustion by user tools | security | no arbitrary code; DSL interpreter in separate sandboxed process; quotas; fuzz tests (06 §3) |
 | R-06 | Metering errors (under-charging) or vendor price changes make the platform pay LLM cost | budget | vendor-reported usage, versioned price table, worst-case reservation, monthly reconciliation RB-09, kill switch (ADR-010/020) |
-| R-07 | Screener core licensing/IP: private code consumed by a public repo | IP leak | consume as a private package dependency, never vendored (ADR-008; Q-06) |
+| R-07 | (reduced in v0.4) Screener code access: all repos private; risk is now a leaked CI read token or a product repo accidentally left public | IP leak | fine-grained read-only token as BuildKit secret, never in images; owner confirms both product repos are private (C-7) |
 | R-08 | (closed in v0.2: managed Postgres from day one, ADR-007) | — | — |
 | R-09 | Club features read as a regulated activity (pooled money / advice) | legal | record-only enforced by design (BR-14, G-20); legal check before any pooled-money feature (Q-04) |
 | R-10 | Single-node managed DB and single batch VM | availability | 99 % SLO tolerates it; serving survives batch outage (ADR-019); HA standby option +€10; restore drills (03 §6) |
@@ -281,7 +299,7 @@ Added by the architect:
 
 ## 8. Questions for the owner
 
-Options and the architect's recommendation: `07-roadmap.md` "Owner questions". Answered 2026-11-06: Q-01, Q-02, Q-02b (A), Q-03/Q-03b (Yahoo V1), Q-04, Q-13 (Stripe), Q-14 (prepaid). Open: Q-03c licensed switch date, Q-05 LLM vendor, Q-06 how the public product consumes the private screener code, Q-07 email provider, Q-08 sign-in method, Q-09 posts visibility, Q-10 GDPR deletion of social content and of a super admin's club, Q-11 object storage for raw zips/backups, Q-12 task source for impl mode, Q-14b top-up amounts / margin / expiry, Q-15 business set-up and VAT/OSS (owner + accountant).
+Options and the architect's recommendation: `07-roadmap.md` "Owner questions". Answered 2026-11-06: Q-01, Q-02, Q-02b (A), Q-03/Q-03b (Yahoo V1), Q-04, Q-05 (Claude), Q-06 (private repos), Q-08, Q-09 (BR-18), Q-10 clubs (BR-08), Q-12 (GitHub issues), Q-13 (Stripe), Q-14/Q-14b. Open: Q-03c licensed switch date, Q-07 email provider, Q-10a deletion of a user's own posts/comments (A-35), Q-11 object storage, Q-15 business set-up and VAT/OSS (owner + accountant).
 
 ## ADR index
 
@@ -294,16 +312,16 @@ Options and the architect's recommendation: `07-roadmap.md` "Owner questions". A
 | ADR-005 | Incremental runs, run tracking, idempotency, SEC rate limit | Accepted |
 | ADR-006 | Per-sector watchers and per-filing gap fill | Accepted |
 | ADR-007 | Application database: managed PostgreSQL (EU) from day one | Accepted (Scaleway) |
-| ADR-008 | Reconciliation layer and reuse of the screener core | Accepted (packaging per Q-06) |
+| ADR-008 | Reconciliation layer and reuse of the screener core | Accepted (private git dependency, v0.4) |
 | ADR-009 | User-built tools: declarative DSL + sandboxed runner | Accepted |
-| ADR-010 | LLM for the conversational tool builder (premium, user-paid, metered) | Proposed (owner: Q-05) |
-| ADR-011 | Authorization: spaces, roles, per-item shares | Accepted |
+| ADR-010 | LLM for the conversational tool builder (premium, user-paid, metered): Anthropic Claude | Accepted |
+| ADR-011 | Authorization: spaces (private, club, public), roles, per-item shares | Accepted (v0.4) |
 | ADR-012 | EOD price source: Yahoo V1 (owner risk acceptance); marketstack/Tiingo replacement path | Accepted (owner risk acceptance) |
 | ADR-013 | Async without a broker: outbox, Postgres job queue, filing-event table | Accepted (v0.2) |
 | ADR-014 | Web stack: FastAPI + Jinja/HTMX | Accepted |
 | ADR-015 | Hosting: managed EU serving plane (Scaleway) + Hetzner batch plane | Accepted (owner, option A) |
-| ADR-016 | Identity: self-managed accounts and sessions | Proposed (owner: Q-08) |
+| ADR-016 | Identity: self-managed accounts, email + password + optional magic link | Accepted |
 | ADR-017 | Notifications: in-app + email (Scaleway TEM recommended) | Proposed (owner: Q-07) |
 | ADR-018 | Raw data retention in Hetzner Object Storage, not GitHub | Accepted |
 | ADR-019 | Publishing the as-reported store from batch to serving plane | Accepted (new v0.2) |
-| ADR-020 | Billing & entitlements: credit ledger, metering, Stripe, prepaid top-ups | Accepted (open: Q-14b values, Q-15) |
+| ADR-020 | Billing & entitlements: credit ledger, metering, Stripe, prepaid top-ups | Accepted (open: Q-15) |

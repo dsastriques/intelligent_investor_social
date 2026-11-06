@@ -1,6 +1,6 @@
 # 05 — Financial data collector and as-reported store (topics T2, T3, T9)
 
-Bounded context BC-1 **Filings**. Lives in repo `dsastriques/financial-data-collector` (public), Python package `fdc` (ADR-002). Serves BR-02..05, BR-15, BR-16, FR-01..08, NFR-02, NFR-04, NFR-07.
+Bounded context BC-1 **Filings**. Lives in repo `dsastriques/financial-data-collector` (private from v0.4, C-7), Python package `fdc` (ADR-002). Serves BR-02..05, BR-15, BR-16, FR-01..08, NFR-02, NFR-04, NFR-07.
 
 ## 1. Responsibilities and non-responsibilities
 

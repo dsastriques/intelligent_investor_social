@@ -15,7 +15,7 @@ T9: should the collector live in `financial-data-collector` or inside the produc
 Option 2. `fdc` owns BC-1 Filings: `SourceCollector` port (`list_items`, `fetch`, `read` → streaming records `FilingRecord`, `TagRecord`, `FactRecord`, `PresentationRecord`, `TextRecord`, `DimensionRecord`), adapters `sec-fsds`, `sec-fsn`, `sec-filing` (Arelle), `ffiec-cdr`. The store schema (`sql/store_schema_v1.sql`) + `store_client` are the published language; the app pins `fdc` by git tag.
 
 ## Consequences
-+ independent cadence and CI; reusable by the screener later; public repo fits public data.
++ independent cadence and CI; reusable by the screener later. (v0.4: repo made private by the owner, C-7.)
 + a hard boundary that enforces BR-02 (the app cannot write the store).
 − two repos to version; schema changes need coordinated releases (contract tests, 04 §5).
 − no raw data in the repo (ADR-018).

@@ -1,12 +1,14 @@
 # 07 — Phased implementation plan
 
-v0.3 (2026-11-06): owner accepted hosting A, Yahoo prices for V1, Stripe, prepaid top-ups — M3 uses the Yahoo adapter (no licence gate), M5b uses Stripe. v0.2: M0 unchanged; hosting spike S-1 added to M3; M3 prices use marketstack behind the licence gate; billing milestone M5b added; owner questions updated.
+v0.4 (2026-11-06): owner answered Q-05, Q-06, Q-08, Q-09, Q-10 (clubs), Q-12, Q-14b; M0 tracked as GitHub issues #2–#6; M6 includes ownership transfer, club deletion and space-based post visibility. v0.3: owner accepted hosting A, Yahoo prices for V1, Stripe, prepaid top-ups — M3 uses the Yahoo adapter (no licence gate), M5b uses Stripe. v0.2: M0 unchanged; hosting spike S-1 added to M3; M3 prices use marketstack behind the licence gate; billing milestone M5b added; owner questions updated.
 
 Milestones are ordered by risk: the data asset first (largest unknowns: size, FSN semantics), then the app skeleton, then features. Each milestone ends with a PR (or PRs) reviewed in architect impl mode. Durations are not estimated here (owner/coordinator plan the calendar).
 
 ## M0 — Collector sizing test (first milestone)
 
 **Repo:** `financial-data-collector`. **Goal:** measured numbers that confirm or change ADR-003 (store layout), ADR-004 (FSN vs FSDS) and the Hetzner batch VM size and object-storage volume (ADR-015, ADR-018, ADR-019), before any full backfill (NFR-02, research step 6).
+
+**GitHub issues (label `milestone:M0`, repo `intelligent_investor_social`; code lands in `financial-data-collector`):** [#2](https://github.com/dsastriques/intelligent_investor_social/issues/2) scaffold + CI · [#3](https://github.com/dsastriques/intelligent_investor_social/issues/3) contract, streaming readers, rate limiter, UA · [#4](https://github.com/dsastriques/intelligent_investor_social/issues/4) StoreWriter both layouts, run tracking, idempotency, restatements · [#5](https://github.com/dsastriques/intelligent_investor_social/issues/5) `fdc sizing` + sizing run/report · [#6](https://github.com/dsastriques/intelligent_investor_social/issues/6) review report → ADR-003/004/015 decisions. Order: #2 → #3 → #4 → #5 → #6.
 
 Scope:
 1. Repo scaffold: `pyproject.toml` (uv, ruff, mypy strict, pytest), hexagonal skeleton per 05 §2, CI (lint, types, tests on fixture zips, no SEC calls).
@@ -42,31 +44,25 @@ UC-04..UC-07: portfolio with reasons, plans and reviews, watchlists, alert rules
 Built-in tools (screener core wrappers, golden tests), ToolSpec DSL + sandboxed runner (private container, analysis snapshot), conversational builder with LLM per Q-05 behind the `Entitlements`/`Metering` facade (fake billing until M5b). FR-10..FR-12, NFR-09.
 
 ## M5b — Billing & Entitlements (premium builder)
-BC-11 per ADR-020: billing account, ledger, reservations, usage records, price table, `StripePaymentGateway` (Checkout + webhooks, test mode first), top-up checkout + webhook inbox, usage page, operator reconciliation view (RB-09), deletion-saga step. **Gate before `billing_live`:** owner's business set-up and VAT/OSS registration done (Q-15), terms of sale + withdrawal-right wording, top-up amounts / margin / expiry confirmed (Q-14b); recommended (not required): price-vendor switch reviewed (ADR-012 §5). BR-17, FR-29.
+BC-11 per ADR-020: billing account, ledger, reservations, usage records, price table, `StripePaymentGateway` (Checkout + webhooks, test mode first), top-up checkout + webhook inbox, usage page, operator reconciliation view (RB-09), deletion-saga step. **Gate before `billing_live`:** owner's business set-up and VAT/OSS registration done (Q-15), terms of sale + withdrawal-right wording, top-up amounts, 20 % margin and expiry configured (Q-14b, confirmed); recommended (not required): price-vendor switch reviewed (ADR-012 §5). BR-17, FR-29.
 
 ## M6 — Social and clubs
-Sharing, posts/comments, moderation; clubs with roles, club space, import tool, mark as bought. BR-06..BR-11, FR-19..FR-26.
+Sharing, posts/comments in the public space (visitor-readable) and club spaces (members only) per BR-18, moderation; clubs with roles, ownership transfer, club deletion, leave rules, club space, import tool, mark as bought. BR-06..BR-11, BR-18, FR-19..FR-26.
 
 ## M7 — Hardening and beta launch
-GDPR export/delete saga, NFR suites (performance, load, sandbox, ZAP), restore drill, runbooks, privacy notice/terms, beta invitations. NFR-01, NFR-03, NFR-06, NFR-08.
+GDPR export/delete saga (incl. the transfer-or-delete precondition for owned clubs, FR-27), NFR suites (performance, load, sandbox, ZAP), restore drill, runbooks, privacy notice/terms, beta invitations. NFR-01, NFR-03, NFR-06, NFR-08.
 
 ## Dependencies
-M0 → M1 → (M2 ∥ M3) → M4 → M5 → M5b → M6 → M7. M3 can start on the M1 seed bundle. Q-05 (LLM) by M5; Q-14b/Q-15 by M5b; Q-03c (licensed price switch) recommended before public launch or M5b; Q-06 (screener code packaging) by M3/M5.
+M0 → M1 → (M2 ∥ M3) → M4 → M5 → M5b → M6 → M7. M3 can start on the M1 seed bundle. Q-15 by M5b; Q-10a by M7; Q-03c (licensed price switch) recommended before public launch or M5b.
 
 ## Owner questions (options and architect recommendation)
 
-Answered 2026-11-06 (owner): **Q-01** private beta ≤100 invited users (design for ~10k) · **Q-02** €50–200/month excl. LLM, managed preferred, Hetzner for heavy batch · **Q-02b** hosting option A · **Q-03/Q-03b** Yahoo prices for V1 under owner risk acceptance, licensed switch later · **Q-04** record-only clubs, no personalised advice confirmed · **Q-13** Stripe · **Q-14** prepaid top-ups.
+Answered 2026-11-06 (owner): **Q-01** private beta ≤100 invited users (design for ~10k) · **Q-02** €50–200/month excl. LLM, managed preferred, Hetzner for heavy batch · **Q-02b** hosting option A · **Q-03/Q-03b** Yahoo prices for V1 under owner risk acceptance, licensed switch later · **Q-04** record-only clubs, no personalised advice confirmed · **Q-13** Stripe · **Q-14** prepaid top-ups · **Q-14b** €10/25/50, 20 % margin, 12-month expiry · **Q-05** Anthropic Claude (Haiku default, Sonnet repairs) · **Q-06** all repos private → private git dependency for the screener · **Q-08** email + password with verification, magic link option · **Q-09** post visibility by space (BR-18) · **Q-10** clubs: transfer to any member or delete before leaving/account deletion (BR-08) · **Q-12** GitHub issues.
 
 | Q | Question | Options | Recommendation | Blocks |
 |---|---|---|---|---|
 | Q-03c | When to switch from Yahoo to a licensed price vendor (ADR-012) | (a) before public launch, (b) before the first paid top-up (M5b), (c) later / on first block or complaint | **earliest of (a)/(b)** — charging users makes the use clearly commercial; marketstack Professional ≈ €43 fits the budget (A ≈ €141) if it confirms display in writing, else Tiingo ≈ €217 | public launch, M5b (recommendation only) |
-| Q-05 | LLM vendor and limits for the tool builder | (a) Anthropic API (Haiku-class default, larger model for repairs), (b) other hosted vendor, (c) EU-hosted open model | (a) with structured output, prompt caching, DPA + zero/short retention; prices verified at M5. Limits are now safety limits only (users pay, BR-17) | M5 |
-| Q-06 | How the public product repo consumes the private screener code | (a) private git dependency, (b) extract pure core into a private `investor-core` package, (c) make the core public | (b); note: with container images built in GitHub Actions, CI needs a read token for the private package (registry/deploy key) | M3, M5 |
 | Q-07 | Transactional email provider | (a) Scaleway TEM (same provider/DPA as hosting, 300 free then €0.25/1k), (b) Brevo/Mailjet (EU), (c) US provider with SCCs | **(a)** (hosting A accepted) | M4 |
-| Q-08 | Sign-in method | (a) email + password (+ verification), (b) passwordless magic link, (c) social login | (a) + (b) as option; (c) later | M3 |
-| Q-09 | Posts visibility (A-R11) | (a) members-only, (b) public read, (c) author chooses | (c) with default members-only | M6 |
-| Q-10 | GDPR deletion of social content and clubs | posts: (a) delete, (b) anonymise; super admin leaves/deletes: (a) club deleted, (b) transfer to an admin | posts (b) for comments in others' threads, delete own posts; clubs (b) — changes BR-08, needs owner approval. v0.2 addition: billing records are pseudonymised, not deleted (A-27) | M6, M7 |
+| Q-10a | Account deletion: the user's own posts and comments (club part decided by BR-08) | (a) delete everything, (b) delete own posts and anonymise comments in others' threads ("deleted user"), (c) anonymise everything | **(b)**, kept as assumption A-35 until confirmed | M7 |
 | Q-11 | Object storage | (a) Hetzner Object Storage for batch (raw, bundles, dumps) + Scaleway one-zone for the published store, (b) one provider for both, (c) Cloudflare R2 | **(a)** (follows ADR-015 option A; ADR-018/019) | M1 |
-| Q-12 | Task source for architect impl mode | (a) GitHub issues, (b) Trello, (c) manual | (a) | impl mode |
-| Q-14b | Prepaid top-up values (configuration) | amounts; margin 0 % / 10–30 %; expiry none / 12 months; unused credit on deletion: refund / forfeit after notice | €10 / €25 / €50; margin 15–20 % (covers Stripe fees, optional Stripe Tax 0.5 %, metering error); 12-month expiry; refund unused credit on request within the legal window | M5b |
 | Q-15 | Business set-up and EU VAT/OSS for selling premium credits via Stripe (owner + accountant) | (a) sole trader (eenmanszaak) + OSS registration, (b) company (BV) + OSS, (c) switch to Paddle (MoR) to avoid in-house VAT | Architect does not decide. With Stripe the owner is the seller: register for OSS (or stay under the €10k EU-wide threshold), show VAT-inclusive prices, keep invoices, decide Stripe Tax (0.5 %) yes/no; check voucher treatment of prepaid credits, withdrawal right, 7-year retention (A-27), that credits are not e-money | M5b gate |
