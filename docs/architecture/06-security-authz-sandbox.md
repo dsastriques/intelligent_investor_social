@@ -14,7 +14,7 @@ Serves BR-06..BR-11, BR-17, FR-11, FR-19..FR-29, NFR-08, NFR-09, NFR-10. v0.2: r
 | XSS/CSRF | web | Jinja autoescape, Markdown sanitised (bleach/nh3 allow-list), CSP, CSRF tokens, SameSite cookies |
 | Data loss | Postgres `app` | provider backups + encrypted off-provider dumps + restore drills (03 §6) |
 | Free LLM use / credit fraud | billing ledger, LLM spend | reserve-before-call (G-24), row-locked reservations, credit only from signature-verified idempotent webhooks, no client-side price trust (G-23) |
-| Payment data exposure | cards | hosted checkout (PCI SAQ-A), no card data stored; provider is sub-processor/MoR |
+| Payment data exposure | cards | Stripe hosted Checkout (PCI SAQ-A), no card data stored; Stripe is a sub-processor (owner is seller) |
 | Webhook spoofing/replay | billing | signature verification, unique provider event id, Cloudflare rate limit on `/billing/webhook` |
 | SEC block for over-fetching | collector | host-wide rate limiter, UA (NFR-07) |
 | Regulatory exposure | platform | record-only (BR-14, G-20), disclaimers |
@@ -149,7 +149,7 @@ v0.2: LLM cost is paid by users (BR-17), so LLM limits are **safety** limits, no
 ## 4. Privacy and GDPR (NFR-08, FR-27)
 
 ### 4.1 Principles
-- EU hosting for all personal data (Scaleway fr-par serving plane + Hetzner DE/FI dumps, ADR-015); sub-processors listed in privacy notice (Scaleway, Hetzner, Cloudflare, email, LLM, payment provider/MoR, error tracking). The batch plane holds personal data only as client-side encrypted dumps. Cloudflare proxies traffic (DPA, standard contractual clauses).
+- EU hosting for all personal data (Scaleway fr-par serving plane + Hetzner DE/FI dumps, ADR-015); sub-processors listed in privacy notice (Scaleway, Hetzner, Cloudflare, email, LLM, Stripe, error tracking). The batch plane holds personal data only as client-side encrypted dumps. Cloudflare proxies traffic (DPA, standard contractual clauses).
 - Data minimisation: email, display name, optional bio; portfolios and plans are user content. No trackers.
 - Consent: terms + privacy notice acceptance at sign-up (versioned `Consent`); email notifications opt-out per kind.
 - Private by default (BR-06).

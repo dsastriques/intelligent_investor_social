@@ -1,6 +1,10 @@
 # 00 — Overview: Intelligent Investor Pro (V1)
 
-Status: **design v0.2 (2026-11-06)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.2**: owner answers Q-01..Q-04, new BR-17/FR-29, revised NFR-01/NFR-10/NFR-11) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+Status: **design v0.3 (2026-11-06)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.2**: owner answers Q-01..Q-04, new BR-17/FR-29, revised NFR-01/NFR-10/NFR-11) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+
+## What changed in v0.3
+
+Owner decisions 2026-11-06 (via coordinator): **Q-02b** hosting option A accepted (ADR-015 Accepted; AWS added as option E, estimate ≈ €180–200) · **Q-03b** prices from **Yahoo for V1** under owner risk acceptance, licensed switch date open (ADR-012) · **Q-13** payment provider **Stripe** (owner handles VAT/OSS; ADR-020) · **Q-14** **prepaid top-ups** (amounts/margin/expiry still to confirm, Q-14b). Planned platform cost drops to ≈ €98/month (no price-vendor fee).
 
 ## What changed in v0.2
 
@@ -60,11 +64,11 @@ Status: **design v0.2 (2026-11-06)**, architect design mode. Input: `claude/01-r
 - **App data:** **managed PostgreSQL (EU)** with schemas `app` and `market`, SQLAlchemy Core + Alembic, least-privilege roles per process. [ADR-007]
 - **Reconciliation:** an anti-corruption layer turns as-reported facts into standardized annual financials (the screener's `AnnualFinancials`), with lineage; the screener's pure modules are reused as a library. [ADR-008]
 - **User tools:** declarative ToolSpec DSL produced by an LLM from conversation, executed by an isolated `tool-runner` (private container, no DB role, no secrets) on a read-only public analysis snapshot. No arbitrary user code in V1. [ADR-009, ADR-010]
-- **Premium & billing:** BC-11 Billing & Entitlements — prepaid credit ledger, per-call LLM metering (reserve → call → settle), payment provider behind `PaymentGateway` (MoR recommended). Running tools stays free. [ADR-020, ADR-010]
+- **Premium & billing:** BC-11 Billing & Entitlements — prepaid credit ledger, per-call LLM metering (reserve → call → settle), **Stripe** Checkout + webhooks behind `PaymentGateway`, prepaid top-ups. Running tools stays free. [ADR-020, ADR-010]
 - **AuthZ:** resource-based policies in the application layer; "spaces" (private space, club space) with roles; per-item shares. [ADR-011]
 - **Async:** transactional outbox + Postgres job queue (`SKIP LOCKED`, `LISTEN/NOTIFY`) + `market.filing_event` feed from the batch plane. No message broker. [ADR-013]
-- **Prices:** EOD prices via a vendor-agnostic `PriceProvider` port; vendor **marketstack** subject to written display-licence confirmation. [ADR-012]
-- **Hosting:** serving plane on **Scaleway (fr-par)** managed services; batch plane on **Hetzner** (VM + Object Storage); Cloudflare in front. ≈ €141/month planned incl. price vendor. [ADR-015, ADR-018, ADR-019]
+- **Prices:** EOD prices via a vendor-agnostic `PriceProvider` port; **V1 adapter Yahoo** (owner risk acceptance, against NFR-11); licensed replacement path marketstack → Tiingo. Cached last price with staleness indicator and attribution. [ADR-012]
+- **Hosting:** serving plane on **Scaleway (fr-par)** managed services; batch plane on **Hetzner** (VM + Object Storage); Cloudflare in front. ≈ €98/month planned (Yahoo prices, no vendor fee). [ADR-015, ADR-018, ADR-019]
 - **Identity:** self-managed accounts (email + password, argon2id, email verification), server-side sessions. [ADR-016] **Notifications:** in-app + email via Scaleway Transactional Email (recommended). [ADR-017]
 
 ### C4 — System context
@@ -80,10 +84,10 @@ flowchart LR
   end
   sec[(SEC EDGAR<br/>FSDS / FSN bulk, daily index, filings)]
   ffiec[(FFIEC CDR<br/>Call Reports bulk)]
-  price[(EOD price vendor<br/>marketstack, licence-gated)]
+  price[(EOD prices<br/>Yahoo V1, owner risk acceptance)]
   llm[(LLM API<br/>OWNER DECISION Q-05)]
   mail[(Transactional email<br/>Scaleway TEM)]
-  pay[(Payment provider<br/>OWNER DECISION Q-13)]
+  pay[(Stripe<br/>Checkout + webhooks)]
   fx[(ECB FX reference rates)]
   visitor -->|landing, public content| app
   user -->|HTTPS via Cloudflare| app
@@ -177,7 +181,7 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | FR-06 | Restatement detection on load; `fact_revision` + `RestatementDetected` event | 05 §5 |
 | FR-07 | `collector_run` history, `fdc status`, healthchecks pings, `/health` JSON | 05 §6; 03 §7 |
 | FR-08 | Statement views from `pre` (statement as presented), filters annual (`fp=FY`/`qtrs=4`) and consolidated (no segments) | 05 §10; 02 §8 |
-| FR-09 | Daily EOD prices (marketstack, tracked instruments daily, universe weekly A-22) into `market.prices_daily`, history retained | 02 §8; ADR-012 |
+| FR-09 | Daily EOD prices (Yahoo adapter in V1, ADR-012; tracked instruments daily, universe weekly A-22) into `market.prices_daily`, history retained | 02 §8; ADR-012 |
 | FR-10 | Screener core reused as library over standardized financials (rules, guardrail, ranking, PE watch, peers, targets, MA alerts) | 02 §9; ADR-008 |
 | FR-11 | Conversational builder (premium, BR-17) → ToolSpec DSL → sandboxed runner; tool versions saved in private space | 06 §3; ADR-009, ADR-010 |
 | FR-12 | ToolSpec `output: watchlist` → worker applies result to a watchlist owned by the caller's space | 06 §3.4 |
@@ -197,7 +201,7 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | FR-26 | `MarkAsBought` | 01 §5.6 |
 | FR-27 | Identity context: sign-up/in, profile, export, delete (GDPR) | 06 §4; ADR-016 |
 | FR-28 | Server-rendered web UI (Jinja + HTMX) | 02 §3; ADR-014 |
-| FR-29 | BC-11: prepaid credit ledger, top-up via hosted checkout + verified idempotent webhooks, `UsageRecord` per LLM call (tokens, price-table version, margin), usage page per session/month, block at zero credit; provider per Q-13 | 01 §5.9; 02 §5–6; 03 §7 RB-09; ADR-020 |
+| FR-29 | BC-11: prepaid credit ledger, top-up via hosted checkout + verified idempotent webhooks, `UsageRecord` per LLM call (tokens, price-table version, margin), usage page per session/month, block at zero credit; Stripe Checkout + signature-verified webhooks; owner handles VAT/OSS | 01 §5.9; 02 §5–6; 03 §7 RB-09; ADR-020 |
 
 ### Non-functional requirements
 
@@ -212,8 +216,8 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | NFR-07 | Host-wide token-bucket limiter (default 8 req/s) shared by all `fdc` processes; UA mandatory | 05 §6.3; ADR-005 |
 | NFR-08 | EU hosting (Scaleway FR, Hetzner DE/FI), EU sub-processors where possible, encrypted off-provider dumps, export/delete with billing pseudonymisation, private-by-default policies | 06 §4; ADR-011, ADR-015, ADR-016, ADR-020 |
 | NFR-09 | Declarative DSL, separate `tool-runner` with systemd sandbox, no network, no app DB access, quotas | 06 §3; ADR-009 |
-| NFR-10 | Costed options A–D within €50–200 incl. price vendor and email, excl. LLM; recommended A ≈ €141/month (managed serving plane + Hetzner batch); LLM paid by users (BR-17); no broker; budget alerts at €150/€190 | 03 §10; ADR-015, ADR-012, ADR-020 |
-| NFR-11 | Vendor comparison of display licences (11 vendors, sourced); marketstack chosen subject to written display confirmation archived in `docs/licences/`; Tiingo Start-up Redistribution fallback; Yahoo excluded; SEC/FFIEC public domain; `source` on every price row | ADR-012; Q-03b; G-19 |
+| NFR-10 | Costed options A–E within €50–200 incl. price vendor and email, excl. LLM; **accepted A** ≈ €98/month with Yahoo (≈ €141 with marketstack later) (managed serving plane + Hetzner batch); LLM paid by users (BR-17); no broker; budget alerts at €150/€190 | 03 §10; ADR-015, ADR-012, ADR-020 |
+| NFR-11 | **Not met in V1 by owner decision (2026-11-06, Q-03b):** Yahoo prices used knowingly against its terms (ADR-012 §2); requirement text unchanged. Mitigations: port swap, `source` per price row, attribution/disclaimer, no raw price export; licensed replacement path marketstack (pending written display confirmation) → Tiingo; review recommended before public launch or first paid top-up. SEC/FFIEC public domain | ADR-012; R-03 |
 | NFR-12 | Python/uv; managed services reduce ops; SQLite/systemd kept for the collector; IaC (OpenTofu) for two providers; modular monolith; guidelines checklist | ADR-001, ADR-014, ADR-015 |
 
 ## 6. Assumptions (design proceeds on these; owner/coordinator to confirm)
@@ -260,7 +264,7 @@ Added by the architect:
 |---|---|---|---|
 | R-01 | Notes data sets (FSN) far larger than estimated; disk/time blow up | cost, schedule | M0 sizing test with go/no-go thresholds before full backfill; FSDS-only fallback with notes on demand (05 §11) |
 | R-02 | Per-filing XBRL parsing for gap fill does not reproduce FSDS semantics (segments, labels, line order) | data inconsistency until bulk arrives | loads marked `provisional`, replaced by bulk; spike in M2; Arelle fallback (05 §7) |
-| R-03 | marketstack does not confirm display rights; licensed alternatives (Tiingo $250, Twelve Data $499, marketdata.app $333+) exceed €200 | blocks beta launch or budget | written confirmation gate before M3 go-live; port + adapters; Q-03b budget exception decision ready |
+| R-03 | **Yahoo terms breach (accepted by owner):** §2(d)(ix) automated collection, §2(d)(x) data feed/app, §2(h) commercial use → possible block, takedown or claim; exposure grows with public launch and paid premium | legal, availability | owner risk acceptance recorded; adapter isolated behind the port; attribution/disclaimer; no raw price export; licensed replacement adapters ready (marketstack → Tiingo); recommended review before public launch or first paid top-up |
 | R-04 | Reconciliation mapping (as-reported → standardized) wrong for many filers; built-in tools mislead | user trust | lineage per field, coverage metrics, overlap checks against the screener's existing EDGAR output, "data coverage" shown with results (ADR-008) |
 | R-05 | Sandbox escape or resource exhaustion by user tools | security | no arbitrary code; DSL interpreter in separate sandboxed process; quotas; fuzz tests (06 §3) |
 | R-06 | Metering errors (under-charging) or vendor price changes make the platform pay LLM cost | budget | vendor-reported usage, versioned price table, worst-case reservation, monthly reconciliation RB-09, kill switch (ADR-010/020) |
@@ -270,14 +274,14 @@ Added by the architect:
 | R-10 | Single-node managed DB and single batch VM | availability | 99 % SLO tolerates it; serving survives batch outage (ADR-019); HA standby option +€10; restore drills (03 §6) |
 | R-11 | Serverless Containers behaviour/cost for always-on worker or cold starts differs from estimate; runner egress cannot be blocked | cost, latency, isolation | spike S-1 before provisioning; fallback option C (Scaleway VM + systemd) keeps DB/storage/batch unchanged |
 | R-12 | Hetzner cloud types unavailable to order / further price rises | batch plane | AX41 dedicated fallback (€59); Scaleway VM option D |
-| R-13 | marketstack request counting or US coverage (ADRs, OTC) insufficient for the universe | data gaps | 30-instrument probe; weekly universe refresh; Business tier or fallback vendor |
+| R-13 | Yahoo feed changes, rate-limits or blocks without notice; data quality unguaranteed | stale prices, wrong alerts | low-frequency throttled fetch, circuit breaker, cached last price with staleness indicator, alerts suppressed on stale data, feed-broken alert + RB-03 adapter switch |
 | R-14 | Provider backups lack PITR | data loss up to 24 h of user records | verify in S-1; nightly dumps; consider more frequent dumps or Sliplane/Ubicloud (PITR) |
-| R-15 | Prepaid credits treated as vouchers/e-money or VAT/consumer-law set-up wrong | legal/tax | restricted credits (platform use only, non-transferable, non-withdrawable); MoR provider; accountant/legal check before first paid top-up (gate M5b, Q-15) |
+| R-15 | Prepaid credits treated as vouchers/e-money or VAT/OSS/consumer-law set-up wrong (owner is seller with Stripe) | legal/tax | restricted credits (platform use only, non-transferable, non-withdrawable); customer country recorded per top-up; optional Stripe Tax; Paddle (MoR) fallback; accountant/legal check before first paid top-up (gate M5b, Q-15) |
 | R-16 | Two cloud providers increase ops surface | ops load | IaC for both, single runbook set, budget alerts on both |
 
 ## 8. Questions for the owner
 
-Options and the architect's recommendation: `07-roadmap.md` "Owner questions". Answered 2026-11-06: Q-01, Q-02, Q-03 (delegated to architect), Q-04. Open: Q-02b hosting option, Q-03b confirm vendor + fallback budget exception, Q-05 LLM vendor, Q-06 how the public product consumes the private screener code, Q-07 email provider, Q-08 sign-in method, Q-09 posts visibility, Q-10 GDPR deletion of social content and of a super admin's club, Q-11 object storage for raw zips/backups, Q-12 task source for impl mode, Q-13 payment provider, Q-14 premium plan model / margin / credit rules, Q-15 business set-up and VAT (owner + accountant).
+Options and the architect's recommendation: `07-roadmap.md` "Owner questions". Answered 2026-11-06: Q-01, Q-02, Q-02b (A), Q-03/Q-03b (Yahoo V1), Q-04, Q-13 (Stripe), Q-14 (prepaid). Open: Q-03c licensed switch date, Q-05 LLM vendor, Q-06 how the public product consumes the private screener code, Q-07 email provider, Q-08 sign-in method, Q-09 posts visibility, Q-10 GDPR deletion of social content and of a super admin's club, Q-11 object storage for raw zips/backups, Q-12 task source for impl mode, Q-14b top-up amounts / margin / expiry, Q-15 business set-up and VAT/OSS (owner + accountant).
 
 ## ADR index
 
@@ -289,17 +293,17 @@ Options and the architect's recommendation: `07-roadmap.md` "Owner questions". A
 | ADR-004 | SEC bulk sources and per-accession loading policy | Accepted, scope gated by M0 |
 | ADR-005 | Incremental runs, run tracking, idempotency, SEC rate limit | Accepted |
 | ADR-006 | Per-sector watchers and per-filing gap fill | Accepted |
-| ADR-007 | Application database: managed PostgreSQL (EU) from day one | Accepted (v0.2; provider per Q-02b) |
+| ADR-007 | Application database: managed PostgreSQL (EU) from day one | Accepted (Scaleway) |
 | ADR-008 | Reconciliation layer and reuse of the screener core | Accepted (packaging per Q-06) |
 | ADR-009 | User-built tools: declarative DSL + sandboxed runner | Accepted |
 | ADR-010 | LLM for the conversational tool builder (premium, user-paid, metered) | Proposed (owner: Q-05) |
 | ADR-011 | Authorization: spaces, roles, per-item shares | Accepted |
-| ADR-012 | EOD price source: marketstack (licence-gated), Tiingo fallback | Accepted — pending owner (Q-03b) |
+| ADR-012 | EOD price source: Yahoo V1 (owner risk acceptance); marketstack/Tiingo replacement path | Accepted (owner risk acceptance) |
 | ADR-013 | Async without a broker: outbox, Postgres job queue, filing-event table | Accepted (v0.2) |
 | ADR-014 | Web stack: FastAPI + Jinja/HTMX | Accepted |
-| ADR-015 | Hosting: managed EU serving plane (Scaleway) + Hetzner batch plane | Proposed (owner: Q-02b) |
+| ADR-015 | Hosting: managed EU serving plane (Scaleway) + Hetzner batch plane | Accepted (owner, option A) |
 | ADR-016 | Identity: self-managed accounts and sessions | Proposed (owner: Q-08) |
 | ADR-017 | Notifications: in-app + email (Scaleway TEM recommended) | Proposed (owner: Q-07) |
-| ADR-018 | Raw data retention in Hetzner Object Storage, not GitHub | Accepted (provider with Q-02b) |
+| ADR-018 | Raw data retention in Hetzner Object Storage, not GitHub | Accepted |
 | ADR-019 | Publishing the as-reported store from batch to serving plane | Accepted (new v0.2) |
-| ADR-020 | Billing & entitlements: credit ledger, metering, payment provider | Proposed (owner: Q-13, Q-14, Q-15) |
+| ADR-020 | Billing & entitlements: credit ledger, metering, Stripe, prepaid top-ups | Accepted (open: Q-14b values, Q-15) |

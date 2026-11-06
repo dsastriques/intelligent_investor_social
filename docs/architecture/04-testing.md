@@ -6,7 +6,7 @@
 |---|---|---|---|
 | Unit | domain aggregates/value objects, application use cases with fake ports, DSL parser/evaluator, policies, collector record parsing, restatement logic, reconciliation mapping | pytest, hypothesis (DSL, restatement tolerances) | every commit |
 | Integration | SQLAlchemy repositories on real Postgres (CI service container / testcontainers), Alembic up/down, outbox relay, job queue (`SKIP LOCKED`), billing ledger/reservations under concurrency, webhook inbox, collector loaders on fixture zips, store_client + snapshot reader, tool-runner over HTTP | pytest + Postgres + tmp SQLite store files | every PR |
-| Contract | (a) store schema v1: app's `FilingStore` adapter vs `fdc` published `store_client` + schema version (pinned tag); (b) tool-runner request/response JSON schema; (c) `PriceProvider` adapter (marketstack) vs recorded vendor fixtures; (e) `PaymentGateway` adapter vs recorded provider webhook payloads + signature fixtures; (d) screener-core wrapper vs pinned screener version (golden outputs) | pytest, JSON Schema | every PR |
+| Contract | (a) store schema v1: app's `FilingStore` adapter vs `fdc` published `store_client` + schema version (pinned tag); (b) tool-runner request/response JSON schema; (c) `PriceProvider` adapters (Yahoo V1; marketstack/Tiingo replacement) vs recorded vendor fixtures, all against one port contract suite; (e) `StripePaymentGateway` vs recorded Stripe webhook payloads + `Stripe-Signature` fixtures; (d) screener-core wrapper vs pinned screener version (golden outputs) | pytest, JSON Schema | every PR |
 | E2E | user journeys UC-01..UC-13 in a browser against app on seed bundle | Playwright (Python) | every PR (smoke subset) + nightly full |
 | NFR | performance (NFR-03), load (NFR-01), sandbox security (NFR-09), authZ matrix (NFR-08/BR-06), backup/restore (NFR-06), collector memory (NFR-02), rate limit (NFR-07) | locust/k6, pytest, `/usr/bin/time -v`, ZAP baseline | nightly / pre-release |
 
@@ -80,7 +80,7 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | FR-17/18 | `tests/integration/alerts/test_alerts.py::test_price_move_fires_once_per_state_change`, `::test_email_and_inapp_delivered_idempotently` |
 | FR-27 | `tests/integration/identity/test_gdpr.py::test_export_contains_all_contexts`, `::test_delete_saga_removes_personal_data_resumable`, `::test_billing_records_pseudonymised_not_deleted` |
 | FR-29 | `tests/integration/billing/test_metering.py::test_usage_record_per_call_with_price_table_version`, `::test_charge_uses_vendor_reported_tokens_and_margin`, `::test_expired_reservations_released`; `tests/unit/billing/test_price_table.py` |
-| NFR-11 | `tests/unit/test_architecture.py::test_every_price_row_has_licensed_source` (source allow-list from ADR-012) |
+| NFR-11 (owner decision: Yahoo V1) | `tests/integration/market/test_prices.py::test_every_price_row_has_source`, `::test_stale_price_flagged_and_alert_suppressed`; `tests/unit/test_architecture.py::test_yfinance_imported_only_by_yahoo_adapter`; e2e `test_price_attribution_visible` |
 
 ## 5. Contract tests between components
 - `fdc` store schema v1 ↔ app `FilingStore` adapter: the app's CI installs the pinned `fdc` tag, builds a store from its fixture zips, and runs the adapter tests. Schema major bump requires an ADR + app change.

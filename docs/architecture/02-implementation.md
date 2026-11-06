@@ -38,7 +38,7 @@ The app depends on `fdc` (store client only) by git tag in `pyproject.toml` (`fd
 | DB access | SQLAlchemy 2 **Core** (no ORM in domain) + Alembic migrations, psycopg 3 | ADR-007 |
 | App DB | Managed PostgreSQL (EU), schemas `app` and `market` | NFR-08, NFR-10 (managed preferred), FR-29 integrity |
 | Background jobs | Postgres job queue (`SKIP LOCKED`, `LISTEN/NOTIFY`) + in-worker scheduler; batch-plane systemd timers (ADR-013) | no broker to run |
-| Payments | `PaymentGateway` port; MoR provider recommended (ADR-020, Q-13) | FR-29 |
+| Payments | `PaymentGateway` port; `StripePaymentGateway` adapter (Checkout + webhooks), Paddle as alternative adapter (ADR-020) | FR-29 |
 | Packaging | container images (web/worker share one image; minimal runner image) | managed containers (ADR-015) |
 | LLM | Anthropic API by default via an `LlmClient` port (ADR-010, Q-05) | |
 | Email | `EmailSender` port; EU transactional provider (ADR-017, Q-07) | |
@@ -165,7 +165,7 @@ Not used, deliberately: message broker, event sourcing, service mesh, Kubernetes
 ## 8. Market data, prices and alerts (T7, ADR-012, ADR-013)
 
 - **Instruments:** built from catalog companies + SEC `company_tickers.json` (ticker → CIK); daily sync job. Instrument key `XNYS:KO`-style plus vendor symbol mapping.
-- **Price refresh (FR-09, BR-13, NFR-05):** job `prices.refresh_eod` runs Mon–Fri after US close (default 23:30 Europe/Amsterdam, plus a 07:30 catch-up) — fetches EOD closes via `PriceProvider` (vendor marketstack, ADR-012; batched symbols per request), upserts `market.prices_daily(instrument_id, date, close, adj_close, volume, currency, source)`, then emits `PricesRefreshed`. **Tracked** instruments (in any portfolio, watchlist or alert rule) daily; the rest of the listed universe weekly (`prices.universe_refresh`, A-22) to stay within the vendor quota; price date shown on results.
+- **Price refresh (FR-09, BR-13, NFR-05):** job `prices.refresh_eod` runs Mon–Fri after US close (default 23:30 Europe/Amsterdam, plus a 07:30 catch-up) — fetches EOD closes via `PriceProvider` (V1 adapter Yahoo, owner risk acceptance; throttled, circuit breaker; ADR-012), upserts `market.prices_daily(instrument_id, date, close, adj_close, volume, currency, source)`, then emits `PricesRefreshed`. **Tracked** instruments (in any portfolio, watchlist or alert rule) daily; the rest of the listed universe weekly (`prices.universe_refresh`, A-22) to stay within the vendor quota; price date, source and a staleness indicator (> 2 trading days) shown on results; alerts are not fired from stale prices; raw price series are not exported (ADR-012 §3).
 - **Alerts:** `PricesRefreshed` → evaluate all enabled price/value rules in batches (vectorised per instrument; rules grouped by instrument so each series is read once). `FilingCollected`/`RestatementDetected` (consumed from `market.filing_event`, appended by `fdc publish`, cursor stored in schema `app`) → evaluate filing rules. Triggered → `AlertTriggered` → Notifications.
 - **FX:** ECB daily reference rates (free, permitted reuse) for portfolio base-currency valuation; the screener's `fx.py` logic reused.
 - Page loads read latest stored price only; no live calls in request path (BR-13).
@@ -274,7 +274,7 @@ Company page: catalog lookup + one company file + std read model → server time
 - **G-16** User-built tools only via the ToolSpec DSL and the `ToolRunner` port; never `eval`/`exec`/`pickle` of user input anywhere.
 - **G-17** Tests: unit for domain/application (≥ 90 % line coverage on `domain/`), integration for adapters with real Postgres (service container / testcontainers) and real SQLite store files, contract tests for store schema and tool-runner protocol, e2e for each UC touched.
 - **G-18** ruff, ruff format, mypy strict, import-linter, pytest green before every commit; CI never fetches market/SEC data (C-8).
-- **G-19** Every external data source carries `source` on stored rows; licence of new sources recorded in an ADR (NFR-11).
+- **G-19** Every external data source carries `source` on stored rows; the licence (or the owner's risk acceptance, ADR-012) of each source is recorded in an ADR (NFR-11).
 - **G-20** No code that places orders, connects to brokers, holds or moves investment money, or gives personalised advice (BR-14). The only payment integration allowed is BC-11 charging for the platform's own premium usage (FR-29), via `PaymentGateway`.
 - **G-21** Comments and docstrings explain *why*; every user-visible automated change (watchlist from tool, alert) carries a plain-English reason (screener rule 4).
 - **G-22** Design docs updated in the same PR when implementation changes the design; new significant decisions get an ADR.

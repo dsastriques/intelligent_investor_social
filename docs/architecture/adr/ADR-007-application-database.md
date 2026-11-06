@@ -1,6 +1,6 @@
 # ADR-007: Application database: managed PostgreSQL (EU) from day one
 
-- Status: **Accepted** (v0.2, follows the owner's managed-services preference, NFR-10). The provider follows ADR-015, Q-02b.
+- Status: **Accepted** (v0.2, follows the owner's managed-services preference, NFR-10). Provider: Scaleway, per ADR-015 option A (accepted by the owner 2026-11-06).
 - Date: 2026-11-06 (v0.1 chose SQLite WAL + Litestream with switch criteria; superseded)
 - Deciders: architect (design mode); owner for provider and cost
 

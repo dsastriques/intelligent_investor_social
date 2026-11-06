@@ -1,6 +1,6 @@
 # ADR-018: Raw data retention in object storage, not GitHub
 
-- Status: Accepted; provider **Hetzner Object Storage** (Q-11 recommendation v0.2, confirmed together with ADR-015 / Q-02b)
+- Status: Accepted; provider **Hetzner Object Storage** (follows ADR-015 option A, accepted by the owner 2026-11-06; Q-11 formally still open)
 - Date: 2026-11-06 (v0.2)
 - Deciders: architect (design mode); owner for the provider
 

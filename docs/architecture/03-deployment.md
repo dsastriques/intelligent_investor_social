@@ -1,6 +1,6 @@
 # 03 — Deployment, infrastructure and operations (input for the devops skill)
 
-Version: **v0.2 (2026-11-06)**. v0.1 used a single EU VPS. v0.2 applies the owner's answer to Q-02: €50–200/month excluding LLM, managed cloud preferred, Hetzner for heavy batch work (NFR-10). Decisions: ADR-015 (hosting), ADR-007 (managed Postgres), ADR-013 (queue), ADR-018/ADR-019 (object storage, store publication), ADR-012 (price vendor), ADR-017 (email), ADR-020 (payments).
+Version: **v0.3 (2026-11-06)**: option A **accepted** by the owner; V1 prices from Yahoo (ADR-012, €0); Stripe as payment provider (ADR-020); AWS costed as option E. Earlier: v0.1 used a single EU VPS. v0.2 applies the owner's answer to Q-02: €50–200/month excluding LLM, managed cloud preferred, Hetzner for heavy batch work (NFR-10). Decisions: ADR-015 (hosting), ADR-007 (managed Postgres), ADR-013 (queue), ADR-018/ADR-019 (object storage, store publication), ADR-012 (price vendor), ADR-017 (email), ADR-020 (payments).
 
 Serves NFR-01, NFR-02, NFR-04..NFR-08, NFR-10, NFR-12, FR-07, FR-29.
 
@@ -34,8 +34,8 @@ flowchart TB
   runner -->|pre-signed GET| os1
   worker --> tem
   worker --> llm[(LLM API)]
-  worker --> pv[(Price vendor: marketstack)]
-  worker --> pay[(Payment provider MoR)]
+  worker --> pv[(Prices: Yahoo V1 adapter)]
+  worker --> pay[(Stripe Checkout)]
   pay -->|signed webhooks| cf
   box --> store
   box -->|publish| os1
@@ -130,7 +130,7 @@ Restore drill quarterly (RB-05). Never in GitHub. Backups age out within 35 days
 
 ## 10. Cost (NFR-10: €50–200/month, excl. LLM; prices checked 2026-11-06, EUR excl. VAT)
 
-### 10.1 Recommended: option A (managed serving + Hetzner batch)
+### 10.1 Accepted: option A (managed serving + Hetzner batch)
 
 | Item | Basis | EUR/month | Verified |
 |---|---|---|---|
@@ -145,26 +145,27 @@ Restore drill quarterly (RB-05). Never in GitHub. Backups age out within 35 days
 | Hetzner Object Storage (raw zips, bundles, dumps ≤ 1 TB) | flat incl. 1 TB + 1 TB egress | 6.49 | yes ([Hetzner OS](https://hetzner.com/storage/object-storage)) |
 | Cloudflare free, healthchecks.io free | | 0 | not re-verified |
 | Domain | ≈ €12/year | ≈ 1 | **not verified** (owner may own one) |
-| **Price vendor: marketstack Professional** | $49.99 ≈ €43.3 (annual $43.99 ≈ €38) | ≈ 43 | price yes ([marketstack](https://marketstack.com/pricing)); display licence **pending confirmation** (ADR-012) |
-| **Total** | | **≈ 121 (CX43) / 141 (CPX32, plan) / 164 (AX41)** | headroom to €200: 36–79 |
+| **Price vendor: Yahoo (V1, owner risk acceptance)** | no fee; licensed replacement marketstack Professional $49.99 ≈ €43 when switched (ADR-012) | 0 (43 later) | Yahoo terms: no licence for this use |
+| **Total (V1, Yahoo)** | | **≈ 78 (CX43) / 98 (CPX32, plan) / 121 (AX41)** | with marketstack later: 121 / 141 / 164 |
 | Optional: Postgres HA node | €0.0136/h × 730 | + 9.9 | yes |
 | One-off: backfill rescale (e.g. a few days on a larger VM) | hourly | ≈ 5–15 once | estimate |
 
 USD→EUR at the ECB reference rate 1.1537 (16-Sep-2026, [Banca d'Italia](https://www.bancaditalia.it/compiti/operazioni-cambi/cambio/cambi_rif_20260916)).
 
-### 10.2 Alternatives (detail in ADR-015)
+### 10.2 Alternatives (detail in ADR-015; totals include marketstack ≈ €43 — subtract it while on Yahoo)
 
 | Option | Monthly incl. price vendor | Note |
 |---|---|---|
 | B. All on one Hetzner VM (v0.1) | ≈ 88 (CPX32) – 111 (AX41) | cheapest; no managed services; leaves room for marketstack Business or Tiingo partially |
 | C. Scaleway DEV1-L VM (€30.66) + managed Postgres + Hetzner batch | ≈ 114–160 (plan 134; IPv4/block storage extra, not verified) | S-1 fallback; IPv4/block prices not verified |
 | D. All Scaleway (batch on DEV1-L + 200 GB block) | ≈ 145–165 | most managed; less batch capacity per euro than Hetzner |
+| E. AWS eu-central-1, same shape (Fargate + ALB, RDS, S3, SES, CloudWatch) | ≈ 180–200 (**coordinator estimate**, not priced line by line) | ≈ €40–60 more than A, mainly ALB (≈ $19.7/month fixed in Frankfurt), public IPv4 ($0.005/h each) and CloudWatch Logs ([cloudburn.io, 2026-09](https://cloudburn.io/blog/aws-elastic-load-balancing-pricing)) |
 
 ### 10.3 What is outside NFR-10
-LLM tokens are paid by premium users (BR-17, ADR-010/020). Payment provider fees are deducted from top-up revenue (A-26).
+LLM tokens are paid by premium users (BR-17, ADR-010/020). Payment provider fees (Stripe processing; optional Stripe Tax 0.5 %, ADR-020) are deducted from top-up revenue (A-26).
 
 ### 10.4 Budget sensitivities
-- **Price vendor fallback** (marketstack declines display): Tiingo Start-up Redistribution $250 ≈ €217. Option A becomes ≈ €315, option B ≈ €262: **above €200 in every option** → owner decision Q-03b.
+- **Switching from Yahoo to a licensed vendor** (ADR-012, owner date open): marketstack Professional ≈ €43 → A ≈ €141 (fits). If marketstack declines display: Tiingo Start-up Redistribution $250 ≈ €217. Option A becomes ≈ €315, option B ≈ €262: **above €200 in every option** → owner decision Q-03b.
 - **marketstack Business** ($149.99 ≈ €130) if Professional's quota or licence is insufficient: A ≈ €208–228 (over), B ≈ €175 (fits).
 
 ## 11. DevOps handoff checklist
@@ -179,6 +180,6 @@ LLM tokens are paid by premium users (BR-17, ADR-010/020). Payment provider fees
 8. CD workflow per §8 with the `prod` environment requiring owner approval; scoped Scaleway API keys.
 9. Backups: verify provider backup retention/PITR; nightly encrypted dump; weekly restore test; RB-05 drill once before beta.
 10. Observability: Cockpit dashboards (latency, queue, tokens/charges, snapshot age, price age), alerts per §7, `/health` wired to the Cloudflare health check.
-11. Payment provider sandbox account + webhook endpoint + signing secret in Secret Manager (ADR-020), staging only until gate M5b passes.
+11. Stripe account (test mode first): Products/Prices for top-up amounts, Checkout, webhook endpoint `/billing/webhook` for `checkout.session.completed`, `checkout.session.async_payment_succeeded`/`_failed`, `charge.refunded`, `charge.dispute.created`; webhook signing secret and restricted API key in Secret Manager; live mode only after gate M5b.
 12. Runbooks RB-01..RB-10 in `deploy/runbooks/`.
 13. Record actual monthly cost in §10 after the first full month.

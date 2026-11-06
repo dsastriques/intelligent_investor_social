@@ -1,6 +1,6 @@
 # ADR-015: Hosting: managed EU serving plane (Scaleway) + Hetzner batch plane
 
-- Status: **Proposed, recommendation for the owner** (Q-02 answered 2026-11-06; the owner picks the option, Q-02b). Validated by spike S-1 in M3.
+- Status: **Accepted** (owner, 2026-11-06, Q-02b: option A). Implementation details validated by spike S-1 in M3; option C stays the fallback.
 - Date: 2026-11-06 (v0.2 replaces v0.1, which put everything on a single VPS)
 - Deciders: architect (design mode); owner for cost
 
@@ -10,21 +10,23 @@
 - The collector (`fdc`) is CPU-, IO- and disk-heavy: a 12-year backfill, a store of tens to hundreds of GB (M0 measures it), Arelle. The web app is light (long-term investing, low request rate, A-21).
 - Hetzner raised cloud prices in June 2026. On 2026-11-06 its cloud product pages showed CX/CAX/CPX/CCX as "currently unavailable" ([Hetzner cost-optimized](https://www.hetzner.com/cloud/cost-optimized/), [regular performance](https://www.hetzner.com/cloud/regular-performance/), [general purpose](https://www.hetzner.com/cloud/general-purpose/); [wz-it.com, 2026-10-01](https://wz-it.com/en/blog/hetzner-price-increase-june-2026-cpx-ccx-alternatives/)). Dedicated AX servers were listed with prices ([matrix-ax](https://www.hetzner.com/dedicated-rootserver/matrix-ax/)).
 
-## Options (monthly, EUR excl. VAT; price vendor marketstack Professional ≈ €43 included in every total; detail in 03 §10)
+## Options (monthly, EUR excl. VAT; v0.2 totals include marketstack Professional ≈ €43 — with the v0.3 Yahoo choice (ADR-012) subtract €43; detail in 03 §10)
 
-| | A. Managed serving plane + Hetzner batch plane (**recommended**) | B. Lean: everything on one Hetzner VM (v0.1) | C. Scaleway VM + managed Postgres + Hetzner batch | D. All Scaleway (batch on a Scaleway VM) |
-|---|---|---|---|---|
-| Web / worker | Scaleway Serverless Containers (min 1 instance each) | systemd on CPX32 | systemd on Scaleway DEV1-L | Serverless Containers |
-| Tool runner | private Serverless Container, scale to zero, no credentials | systemd sandbox | systemd sandbox | private container |
-| App + market DB | Scaleway Managed PostgreSQL | SQLite + Litestream | Scaleway Managed PostgreSQL | Managed PostgreSQL |
-| Collector, reconciliation | Hetzner batch box (systemd) | same VM | Hetzner batch box | Scaleway DEV1-L + block storage |
-| Email / observability | Scaleway TEM / Cockpit | EU provider / self | TEM / Cockpit | TEM / Cockpit |
-| **Total incl. price vendor** | **≈ €121–164** (plan €141) | ≈ €88–111 | ≈ €114–160 | ≈ €145–165 |
-| Managed share | high (DB, compute, storage, email, logs) | none | DB, storage, email | highest |
-| Fit with owner preference | yes, the stated mix | no | partial | yes, but costs more than A for batch |
+| | A. Managed serving plane + Hetzner batch plane (**accepted**) | B. Lean: everything on one Hetzner VM (v0.1) | C. Scaleway VM + managed Postgres + Hetzner batch | D. All Scaleway (batch on a Scaleway VM) | E. AWS eu-central-1 (same shape) |
+|---|---|---|---|---|---|
+| Web / worker | Scaleway Serverless Containers (min 1 instance each) | systemd on CPX32 | systemd on Scaleway DEV1-L | Serverless Containers | ECS Fargate (min 1 each) behind an ALB |
+| Tool runner | private Serverless Container, scale to zero, no credentials | systemd sandbox | systemd sandbox | private container | Fargate task / Lambda |
+| App + market DB | Scaleway Managed PostgreSQL | SQLite + Litestream | Scaleway Managed PostgreSQL | Managed PostgreSQL | RDS PostgreSQL (db.t4g.micro/small) |
+| Collector, reconciliation | Hetzner batch box (systemd) | same VM | Hetzner batch box | Scaleway DEV1-L + block storage | EC2 + EBS, or keep Hetzner |
+| Email / observability | Scaleway TEM / Cockpit | EU provider / self | TEM / Cockpit | TEM / Cockpit | SES / CloudWatch Logs |
+| **Total incl. price vendor** | **≈ €121–164** (plan €141) | ≈ €88–111 | ≈ €114–160 | ≈ €145–165 | **≈ €180–200 (estimate)** |
+| Managed share | high (DB, compute, storage, email, logs) | none | DB, storage, email | highest | highest |
+| Fit with owner preference | yes, the stated mix | no | partial | yes, but costs more than A for batch | yes, but ≈ €40–60/month more than A |
 
-## Decision (recommended)
-**Option A.** Two planes:
+Option E (added v0.3 at the owner's question "is AWS cheaper?"): **coordinator estimate, not priced line by line**, ≈ €40–60/month more than A for the same set-up. The extra cost comes mainly from fixed charges that A does not have. An ALB costs $0.027/ALB-hour in Frankfurt ≈ $19.7/month before LCUs ([cloudburn.io, 2026-09](https://cloudburn.io/blog/aws-elastic-load-balancing-pricing)). Public IPv4 is $0.005/address-hour ≈ $3.65/month each, and Fargate tasks or NAT need several (same source). CloudWatch Logs ingestion is charged per GB. RDS and Fargate always-on minimums are also higher than Scaleway's DB-DEV-S and container free tier. No EU-sovereignty or cost benefit for this workload.
+
+## Decision (accepted)
+**Option A** (owner, 2026-11-06). Two planes:
 1. **Serving plane: Scaleway, region fr-par.** nl-ams is acceptable if Scaleway's product-availability guide confirms Serverless Containers, Managed PostgreSQL and TEM there. Not verified, so Paris is the default. Components: `iip-web` and `iip-worker` as Serverless Containers; `iip-tool-runner` as a private container; Managed PostgreSQL (ADR-007); Object Storage for the published store snapshot (ADR-019); Transactional Email (ADR-017); Cockpit for logs and metrics; Container Registry; Secret Manager. Cloudflare stays in front (DNS, WAF, Turnstile; free plan).
 2. **Batch plane: Hetzner, DE/FI.** One VM runs `fdc` (backfill, feed, watchers, FFIEC), `iip reconcile` and `fdc publish` under systemd, the v0.1 operating model. It holds the as-reported store of record on local NVMe or a volume, and Hetzner Object Storage holds the raw zips, export bundles and off-provider DB dumps (ADR-018). For the initial backfill, rescale the VM up for the backfill days (hourly billing, monthly cap), then back down.
 3. **Fallback:** if spike S-1 fails, use **C**. The DB, storage, email and batch plane are unchanged; only web, worker and runner move to a Scaleway instance with systemd. S-1 fails if an always-on worker is throttled, cold starts break NFR-03, the private runner cannot be isolated from the database, or the measured cost exceeds the estimate by more than 50 %.

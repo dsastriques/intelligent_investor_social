@@ -1,11 +1,11 @@
-# ADR-012: EOD price source behind a port — vendor: marketstack (licence-gated), Tiingo redistribution as fallback
+# ADR-012: EOD price source behind a port: Yahoo for V1 (owner risk acceptance); licensed replacement path marketstack / Tiingo
 
-- Status: **Accepted — pending owner** (Q-03 answered 2026-11-06: "architect proposes the vendor"; owner confirms choice and the licence gate, Q-03b)
-- Date: 2026-11-06 (v0.2; v0.1 left the vendor open)
-- Deciders: architect (design mode); owner for cost and the written licence confirmation
+- Status: **Accepted (owner risk acceptance, 2026-11-06, Q-03b)**. The date to switch to a licensed vendor is open ("decide later").
+- Date: 2026-11-06 (v0.3; v0.2 proposed marketstack behind a licence gate)
+- Deciders: owner (vendor choice and risk acceptance); architect (port design, mitigations)
 
 ## Context
-FR-09, BR-13, NFR-05: daily EOD closes for tracked companies, history for alerts. NFR-11: the licence must permit **display to logged-in users of a web app** (private beta ≤100 users, NFR-01; later public). NFR-10: the platform budget is €50–200/month **including** the price vendor. Yahoo/yfinance stays excluded (unlicensed). Exchange fees are not the issue for EOD: data at least one trading day old carries no exchange display fees, only the vendor's licence terms ([marketdata.app licensing guide](https://www.marketdata.app/education/stocks/stock-market-data-licensing/), third-party, Jan 2026). The vendor receives only API keys and tickers, no personal data, so GDPR impact is nil (no DPA needed beyond the account).
+FR-09, BR-13, NFR-05: daily EOD closes for tracked companies, history for alerts. NFR-11: the licence must permit **display to logged-in users of a web app** (private beta ≤100 users, NFR-01; later public). NFR-10: the platform budget is €50–200/month **including** the price vendor. v0.2 excluded Yahoo/yfinance as unlicensed; in v0.3 the owner chose it for V1 knowingly (Decision §2). Exchange fees are not the issue for EOD: data at least one trading day old carries no exchange display fees, only the vendor's licence terms ([marketdata.app licensing guide](https://www.marketdata.app/education/stocks/stock-market-data-licensing/), third-party, Jan 2026). The vendor receives only API keys and tickers, no personal data, so GDPR impact is nil (no DPA needed beyond the account).
 
 ## Options (prices checked 2026-11-06; USD→EUR at the ECB reference rate 1.1537 of 16-Sep-2026; excl. VAT)
 
@@ -22,22 +22,33 @@ FR-09, BR-13, NFR-05: daily EOD closes for tracked companies, history for alerts
 | 9 | Massive (ex-Polygon) Stocks Business | 2,499 | 2,166 | Yes; Business needed "as soon as anyone other than you can see the data" | yes. [business-stocks](https://massive.com/business-stocks), [KB](https://massive.com/knowledge-base/article/which-plan-do-i-need-to-show-massive-data-in-my-app) |
 | 10 | Alpha Vantage | premium 49.99–249.99 personal; commercial by contact | — | Not without a written agreement | yes. [terms](https://alphavantage.co/terms_of_service) |
 | 11 | EODData commercial feed | ≈750 (US exchanges) | ≈650 | A commercial licence is required to republish, charts included | yes. [EODData](https://eoddata.com/Products/DataFeed.aspx) |
-| — | Yahoo/yfinance | — | — | No licence. **Excluded** | — |
+| 0 | **Yahoo/yfinance (V1 choice, owner risk acceptance)** | 0 | 0 | **No**: the terms forbid automated collection, commercial use and building data feeds (§2(d)(ix), §2(d)(x), §2(h)) | yes, [Yahoo ToS](https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html) |
 
-Observations:
-- The only option that fits NFR-10 is marketstack (row 1). Its licence for our use is unconfirmed.
+Observations (v0.2 analysis, kept for the replacement path):
+- Among licensed options, only marketstack (row 1) fits NFR-10. Its licence for our use is unconfirmed.
 - Of the vendors that explicitly license display, Tiingo Start-ups (row 3) is the cheapest at about €217/month. That alone is above the €200 ceiling.
 - Twelve Data, marketdata.app and Intrinio are licensed but cost 1.5–4× the whole budget.
 
-## Decision
-1. Keep the **`PriceProvider` port** with a bulk/batched EOD method. Rows carry `source` (G-19) so the vendor can be swapped with an adapter change.
-2. **Vendor: marketstack Professional** ($49.99/month, ≈ €43; annual $43.99 ≈ €38). **Gate (before M3 goes live with users):** the owner obtains written confirmation from apilayer/marketstack that the plan permits displaying EOD closes and derived values (portfolio values, alerts, charts) to logged-in users of our web app. The request is one email, as was done for EODHD's storage terms. The reply is archived in `docs/licences/`. If they say yes but a higher tier is needed, pick the tier they name. Business ($149.99) still fits only with the lean hosting variant (03 §10).
-3. **Fallback if marketstack declines or stays silent:** Tiingo Start-up Redistribution ($250/month), after confirming its start-up eligibility and limits with Tiingo sales. This needs an NFR-10 budget exception of about +€175/month (owner decision Q-03b). Twelve Data Venture is the second fallback.
-4. **Quota-aware refresh (ASSUMPTION A-22):** daily EOD only for **tracked** instruments (in any portfolio, watchlist or alert rule, FR-09). The rest of the listed universe used by built-in screens is refreshed **weekly** (config `prices.universe_refresh: weekly|daily`). Result pages show the price date. Estimated requests at one request per ticker (marketstack request counting **not verified**; docs page was not reachable): beta ≈ 1,000 tracked × 21 days + 6,000 universe × 4.3 weeks ≈ 47k/month, inside Professional's 100k. If multi-symbol requests count as one, Basic suffices.
-5. **Probe before go-live** (like the screener's EODHD probe): 30 instruments covering NYSE, Nasdaq, an ADR (20-F filer), a bank and a recent split. Compare closes and adjustments against a second source for 60 days. Record coverage of the CIK→ticker map.
+## Decision (v0.3)
+1. Keep the **`PriceProvider` port** with a batched EOD method. Every price row stores `source` (G-19), so changing vendor means writing a new adapter and nothing else.
+2. **V1 adapter: Yahoo** (`YahooPriceProvider`, through `yfinance`, the library the screener already uses). It is free, so the price-vendor line in 03 §10 drops to €0. The **owner chose this with the risk known**. Yahoo's terms ([legal.yahoo.com Terms of Service](https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html), checked 2026-11-06) forbid it:
+   - **§2(d)(ix)**: no access to or collection of data "using any automated means" without Yahoo's express prior permission;
+   - **§2(d)(x)**: Yahoo data may not be used "to create any database, archive, mobile application, data feed, widget or any other aggregated data source" that competes with or substitutes for its services;
+   - **§2(h)**: the services may not be exploited "for any commercial purposes" without written permission.
+   Yahoo has no official API; `yfinance` scrapes. This decision does not change **NFR-11** (licensed sources). It is recorded as an owner decision that runs against it (00 §5 traceability, R-03).
+3. **Mitigations (required for the Yahoo adapter):**
+   - **Isolation:** Yahoo is used only inside its adapter. No other module imports `yfinance` (import-linter contract).
+   - **Resilience:** fetches run only in the worker, at low frequency (once per trading day for tracked instruments, weekly for the universe, A-22), throttled, with retry/backoff and a circuit breaker. If a fetch fails, the **last cached price** stays and is shown with its date and a **staleness indicator** (warning when older than 2 trading days). Alerts based on stale prices are suppressed and flagged instead of firing.
+   - **Health:** a "price feed broken" alert (refresh missed, or more than 5 % of tracked symbols empty) and runbook RB-03 (switch adapter).
+   - **Attribution and disclaimer:** price displays carry "Prices: Yahoo Finance, unofficial, may be delayed or incorrect; not investment advice" (wording to be confirmed by the owner). Raw Yahoo price series are **not** offered for download or through the public API. Only on-page display and derived values are shown.
+   - **Stored history:** prices are kept for alerts (FR-09). If the vendor changes, the history is re-sourced from the new vendor, so Yahoo rows are not kept as the long-term record (backfill job per adapter).
+4. **Licensed replacement path** (comparison above, unchanged): **marketstack Professional** ($49.99 ≈ €43/month, pending written confirmation that it allows display to logged-in users), then **Tiingo Start-up Redistribution** ($250 ≈ €217, explicit redistribution plan), then Twelve Data Venture. Their adapters are written against the same port contract tests (04 §5) and can be switched with a flag.
+5. **Recommendation (not a requirement):** review the switch to a licensed vendor **before public launch, or before the first paid premium top-up (M5b)**, whichever comes first. Charging users makes the use of Yahoo data clearly commercial (§2(h)). It also adds the platform's own revenue to the exposure.
+6. The **licensed-source test and the `docs/licences/` gate are removed.** They are replaced by **"source recorded per price row"** (test `test_every_price_row_has_source`), and the UI shows the source and date.
 
 ## Consequences
-+ Fits the €200 ceiling. US data comes from the same upstream as Tiingo, and the vendor can be swapped.
-+ Licensing risk is handled explicitly: there is a written gate and a priced fallback, and nothing goes live without a licence (NFR-11).
-− Launch with real users depends on the licence answer (R-03, R-13). If the fallback is needed, the budget ceiling is broken unless the owner raises it.
-− Weekly universe prices make full-universe P/E screens up to a week stale. Tracked companies stay daily (FR-09).
++ €0 for prices in V1, so hosting option A drops to about €98/month (03 §10). It uses the code path the owner already knows.
++ Swapping vendors is an adapter plus a flag, and contract tests cover every adapter.
+− **Legal exposure:** the use breaches Yahoo's terms (automated collection, commercial use, data feed). Possible consequences are blocking, takedown requests or claims. The owner has accepted this risk (R-03).
+− **Operational fragility:** the feed can change, rate-limit or block us without notice, and its data quality is unguaranteed (R-13). The cache, staleness indicator and alert suppression limit the damage but do not stop prices going stale.
+− NFR-11 is not met in V1 until the switch is made.
