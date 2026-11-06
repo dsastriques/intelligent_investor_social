@@ -25,7 +25,7 @@ Option 3, co-located with the serving plane: Scaleway, same region. One instance
 - Staging is a separate database (`iip_staging`) on the same instance (A-20).
 - SQLAlchemy Core + Alembic are unchanged. Postgres-specific features are now allowed where they serve a requirement: `FOR UPDATE SKIP LOCKED` and `LISTEN/NOTIFY` (ADR-013), row locks for credit reservations (ADR-020), partial indexes.
 - The as-reported store stays SQLite files (ADR-003); it is public, rebuildable and file-portable (FR-05).
-- **Backups (A-08):** provider automated backups (on by default; retention and PITR **not verified**, see S-1), plus a nightly `pg_dump` from the batch box, encrypted with `age`, to Hetzner Object Storage with 35-day retention (a second provider guards against account loss). If S-1 shows no PITR, the beta accepts RPO ≤ 24 h for logical errors (R-14). The HA standby is optional for the beta and switched on at public launch.
+- **Backups (A-08):** provider automated backups (on by default; retention and PITR **not verified**, see S-1), plus a nightly `pg_dump` from the batch box, encrypted with `age`, to Hetzner Object Storage with 35-day retention (a second provider guards against account loss). If S-1 shows no PITR, the beta accepts RPO ≤ 24 h for logical errors (R-14). **Standby node: accepted by the owner (2026-11-06, NFR-06), part of the planned set-up from the beta.** Synchronous hot standby with automatic failover, ≈ +€9.9/month. It covers node failure (RPO ≈ 0) but not logical errors, which replicate to the standby; dumps/PITR cover those (R-14).
 - Option 4 is the fallback if Scaleway backups or PITR fall short, or if option C/D hosting moves elsewhere.
 
 ## Consequences

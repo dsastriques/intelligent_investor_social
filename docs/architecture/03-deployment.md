@@ -1,6 +1,6 @@
 # 03 — Deployment, infrastructure and operations (input for the devops skill)
 
-Version: **v0.3 (2026-11-06)**: option A **accepted** by the owner; V1 prices from Yahoo (ADR-012, €0); Stripe as payment provider (ADR-020); AWS costed as option E. Earlier: v0.1 used a single EU VPS. v0.2 applies the owner's answer to Q-02: €50–200/month excluding LLM, managed cloud preferred, Hetzner for heavy batch work (NFR-10). Decisions: ADR-015 (hosting), ADR-007 (managed Postgres), ADR-013 (queue), ADR-018/ADR-019 (object storage, store publication), ADR-012 (price vendor), ADR-017 (email), ADR-020 (payments).
+Version: **v0.5 (2026-11-06)**: managed Postgres standby node accepted (NFR-06, +€9.9). v0.3: option A **accepted** by the owner; V1 prices from Yahoo (ADR-012, €0); Stripe as payment provider (ADR-020); AWS costed as option E. Earlier: v0.1 used a single EU VPS. v0.2 applies the owner's answer to Q-02: €50–200/month excluding LLM, managed cloud preferred, Hetzner for heavy batch work (NFR-10). Decisions: ADR-015 (hosting), ADR-007 (managed Postgres), ADR-013 (queue), ADR-018/ADR-019 (object storage, store publication), ADR-012 (price vendor), ADR-017 (email), ADR-020 (payments).
 
 Serves NFR-01, NFR-02, NFR-04..NFR-08, NFR-10, NFR-12, FR-07, FR-29.
 
@@ -83,7 +83,7 @@ Spike **S-1** (start of M3) verifies the unverified points before provisioning p
 ## 5. Availability (NFR-06: 99 % monthly ≈ 7.3 h downtime budget)
 
 - Managed containers restart on failure. Health endpoint `/health` checks DB, object storage, last price refresh < 36 h on trading days, published snapshot age and queue age. A Cloudflare health check and healthchecks.io alert the operator by email/Telegram.
-- Postgres: single node for the beta (provider-managed; A-28). Enable the HA standby (+≈ €10/month) at public launch or if the error budget is threatened.
+- Postgres: **main node + standby node** (owner-accepted, NFR-06). The standby is a hot replica with automatic failover in the same region, on a different rack (Scaleway FAQ). A node failure loses no committed data, and the app reconnects through the pool with retry. The standby does not protect against logical errors, which replicate; backups/PITR cover those (03 §6, R-14).
 - A batch-plane outage does not stop serving: the last snapshot serves and new filings wait (NFR-04 allows 24 h). Collectors are resumable (BR-05).
 - Deploys: new container revision, rolling. Rollback = previous image tag.
 
@@ -146,8 +146,8 @@ Restore drill quarterly (RB-05). Never in GitHub. Backups age out within 35 days
 | Cloudflare free, healthchecks.io free | | 0 | not re-verified |
 | Domain | ≈ €12/year | ≈ 1 | **not verified** (owner may own one) |
 | **Price vendor: Yahoo (V1, owner risk acceptance)** | no fee; licensed replacement marketstack Professional $49.99 ≈ €43 when switched (ADR-012) | 0 (43 later) | Yahoo terms: no licence for this use |
-| **Total (V1, Yahoo)** | | **≈ 78 (CX43) / 98 (CPX32, plan) / 121 (AX41)** | with marketstack later: 121 / 141 / 164 |
-| Optional: Postgres HA node | €0.0136/h × 730 | + 9.9 | yes |
+| **Postgres standby node** (owner-accepted, NFR-06) | €0.0136/h × 730 (additional node DB-DEV-S) | ≈ 9.9 | yes ([Scaleway DB](https://www.scaleway.com/en/pricing/managed-databases)); whether the standby also bills storage is **not verified** |
+| **Total (V1, Yahoo)** | | **≈ 88 (CX43) / 108 (CPX32, plan) / 131 (AX41)** | with marketstack later: 131 / 151 / 174 |
 | One-off: backfill rescale (e.g. a few days on a larger VM) | hourly | ≈ 5–15 once | estimate |
 
 USD→EUR at the ECB reference rate 1.1537 (16-Sep-2026, [Banca d'Italia](https://www.bancaditalia.it/compiti/operazioni-cambi/cambio/cambi_rif_20260916)).
@@ -165,8 +165,8 @@ USD→EUR at the ECB reference rate 1.1537 (16-Sep-2026, [Banca d'Italia](https:
 LLM tokens are paid by premium users (BR-17, ADR-010/020). Payment provider fees (Stripe processing; optional Stripe Tax 0.5 %, ADR-020) are deducted from top-up revenue (A-26).
 
 ### 10.4 Budget sensitivities
-- **Switching from Yahoo to a licensed vendor** (ADR-012, owner date open): marketstack Professional ≈ €43 → A ≈ €141 (fits). If marketstack declines display: Tiingo Start-up Redistribution $250 ≈ €217. Option A becomes ≈ €315, option B ≈ €262: **above €200 in every option** → owner decision Q-03b.
-- **marketstack Business** ($149.99 ≈ €130) if Professional's quota or licence is insufficient: A ≈ €208–228 (over), B ≈ €175 (fits).
+- **Switching from Yahoo to a licensed vendor** (ADR-012, owner date open): marketstack Professional ≈ €43 → A ≈ €151 incl. standby (fits). If marketstack declines display: Tiingo Start-up Redistribution $250 ≈ €217. Option A becomes ≈ €325, option B ≈ €262: **above €200 in every option** → owner decision Q-03b.
+- **marketstack Business** ($149.99 ≈ €130) if Professional's quota or licence is insufficient: A ≈ €218–238 incl. standby (over), B ≈ €175 (fits).
 
 ## 11. DevOps handoff checklist
 
@@ -178,7 +178,7 @@ LLM tokens are paid by premium users (BR-17, ADR-010/020). Payment provider fees
 6. Cloudflare: zone, proxied DNS to the web container, WAF managed rules, rate limits (`/auth/*`, `/api/*`, `/billing/webhook`), Turnstile keys, Access policy for `staging.` and `/ops`.
 7. Container images: `Dockerfile` (python:3.12-slim, uv, non-root user); separate minimal image for the runner (only `iip.tools.dsl` + readers, no DB drivers, no SDKs).
 8. CD workflow per §8 with the `prod` environment requiring owner approval; scoped Scaleway API keys.
-9. Backups: verify provider backup retention/PITR; nightly encrypted dump; weekly restore test; RB-05 drill once before beta.
+9. Postgres standby node enabled (NFR-06) and a failover test done. Backups: verify provider backup retention/PITR; nightly encrypted dump; pre-migration snapshot; weekly restore test; RB-05 drill once before beta.
 10. Observability: Cockpit dashboards (latency, queue, tokens/charges, snapshot age, price age), alerts per §7, `/health` wired to the Cloudflare health check.
 11. Stripe account (test mode first): Products/Prices for top-up amounts, Checkout, webhook endpoint `/billing/webhook` for `checkout.session.completed`, `checkout.session.async_payment_succeeded`/`_failed`, `charge.refunded`, `charge.dispute.created`; webhook signing secret and restricted API key in Secret Manager; live mode only after gate M5b.
 12. Runbooks RB-01..RB-10 in `deploy/runbooks/`.

@@ -222,6 +222,7 @@ Detail and schema in `05-data-collector.md`.
   - ⚑ **BR-18** visibility = the post's space. There is no per-post visibility field, and the space never changes after creation. Public-space posts are readable by everyone, including visitors; club-space posts only by that club's members.
   - ⚑ Posts are created in the public space by any signed-in user, and in a club space by its admins or super admin (A-32). Signed-in users who can read a post may comment, so visitors cannot comment.
   - ⚑ An embed renders only if the viewer may read the embedded item; otherwise a placeholder is shown (BR-06, A-31).
+  - ⚑ **BR-19** On account deletion, posts and comments are **not** removed. `AnonymiseAuthor(account)` replaces `author_id` with the single platform principal `deleted_user` (A-36). Space, body and timestamps are unchanged and stay visible to the same audience (BR-18). No mapping to the former account is kept, and edit/delete rights pass to nobody. The operator can still hide content (FR-21).
 - **ContentReport**: reporter, target, reason, status. ▶ `HideContent` by operator (FR-21).
 - Comments on club items use the same Comment entity with `target = club item`.
 
@@ -229,6 +230,7 @@ Detail and schema in `05-data-collector.md`.
 
 - **Account** (root): email (unique, verified), password hash, display name, profile, consents (*Consent(kind, version, at)*), roles (`operator` optional), status (`active` | `pending_deletion` | `deleted`).
   - ▶ `SignUp`, `VerifyEmail`, `SignIn` (password), `RequestMagicLink`, `SignInWithMagicLink`, `ResetPassword`, `SignOut`, `ExportMyData`, `DeleteAccount` (FR-27, ADR-016).
+  - ⚑ **BR-19** the deletion saga deletes private-space items and anonymises posts and comments; it does not delete them.
   - ⚑ **FR-27/BR-08** `DeleteAccount(decisions)` is rejected with `OwnershipDecisionRequired(club_ids)` unless every club where the account is super admin has a decision: `transfer_to:<member>` or `delete`. The saga executes those decisions first.
   - ↻ `DeleteAccount` → saga over contexts (06 §4.2).
 - **Space**: id, kind (`private` | `club` | `public`), owner (account, club, or platform for the single public space). Shared kernel *Principal* (incl. `anonymous` for visitors), *Policy*.

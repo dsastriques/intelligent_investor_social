@@ -47,7 +47,7 @@ Observations (v0.2 analysis, kept for the replacement path):
 6. The **licensed-source test and the `docs/licences/` gate are removed.** They are replaced by **"source recorded per price row"** (test `test_every_price_row_has_source`), and the UI shows the source and date.
 
 ## Consequences
-+ €0 for prices in V1, so hosting option A drops to about €98/month (03 §10). It uses the code path the owner already knows.
++ €0 for prices in V1, so hosting option A is about €108/month including the Postgres standby (03 §10). It uses the code path the owner already knows.
 + Swapping vendors is an adapter plus a flag, and contract tests cover every adapter.
 − **Legal exposure:** the use breaches Yahoo's terms (automated collection, commercial use, data feed). Possible consequences are blocking, takedown requests or claims. The owner has accepted this risk (R-03).
 − **Operational fragility:** the feed can change, rate-limit or block us without notice, and its data quality is unguaranteed (R-13). The cache, staleness indicator and alert suppression limit the damage but do not stop prices going stale.

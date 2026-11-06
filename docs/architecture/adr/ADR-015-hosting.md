@@ -19,7 +19,7 @@
 | App + market DB | Scaleway Managed PostgreSQL | SQLite + Litestream | Scaleway Managed PostgreSQL | Managed PostgreSQL | RDS PostgreSQL (db.t4g.micro/small) |
 | Collector, reconciliation | Hetzner batch box (systemd) | same VM | Hetzner batch box | Scaleway DEV1-L + block storage | EC2 + EBS, or keep Hetzner |
 | Email / observability | Scaleway TEM / Cockpit | EU provider / self | TEM / Cockpit | TEM / Cockpit | SES / CloudWatch Logs |
-| **Total incl. price vendor** | **≈ €121–164** (plan €141) | ≈ €88–111 | ≈ €114–160 | ≈ €145–165 | **≈ €180–200 (estimate)** |
+| **Total incl. price vendor** (+ €9.9 Postgres standby in A from v0.5) | **≈ €131–174** (plan €151; ≈ €108 with Yahoo prices) | ≈ €88–111 | ≈ €114–160 | ≈ €145–165 | **≈ €180–200 (estimate)** |
 | Managed share | high (DB, compute, storage, email, logs) | none | DB, storage, email | highest | highest |
 | Fit with owner preference | yes, the stated mix | no | partial | yes, but costs more than A for batch | yes, but ≈ €40–60/month more than A |
 
@@ -36,7 +36,7 @@ Batch box sizing: Hetzner **CX43** (8 vCPU/16 GB/160 GB, €16.49) when orderabl
 ## Consequences
 + Managed DB with provider backups, managed compute that restarts and scales itself, managed email and logs. Fewer things for one developer to patch (NFR-12).
 + A batch outage on Hetzner does not take the site down: the last published snapshot keeps serving, and only new filings are delayed (NFR-04 allows 24 h).
-+ Fits €200 with headroom (≈ €40–80) for HA, a bigger DB node or a higher price-vendor tier.
++ Fits €200 including the accepted Postgres standby (≈ €108/month planned with Yahoo, ≈ €151 with marketstack), leaving headroom for a bigger DB node or a higher price-vendor tier.
 − Two providers: cross-provider traffic (batch → Scaleway DB and Object Storage over TLS with an IP allow-list) and two consoles and bills.
 − The systemd sandbox of v0.1 is replaced by container isolation plus "no credentials, read-only snapshot" for the runner (06 §3.3). Network egress from the runner container cannot be proven blocked (not verified). Accepted because the DSL performs no I/O (G-16).
 − Some line items are unverified: container registry and Secret Manager prices, Hetzner volume price, Scaleway IPv4 price, whether Serverless Containers can attach to a Private Network, and Managed DB IP allow-lists and PITR. S-1 confirms them before provisioning.

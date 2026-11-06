@@ -1,6 +1,13 @@
 # 00 — Overview: Intelligent Investor Pro (V1)
 
-Status: **design v0.4 (2026-11-06)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.3**: adds BR-18, changes BR-08, FR-23, FR-27; v0.2 added BR-17/FR-29) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+Status: **design v0.5 (2026-11-06)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.4**: adds BR-19, NFR-06 standby; v0.3 added BR-18 and changed BR-08, FR-23, FR-27; v0.2 added BR-17/FR-29) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+
+## What changed in v0.5
+
+Owner 2026-11-06 (requirements v0.4):
+- **Q-10a → BR-19**: when an account is deleted, its posts and comments are **kept**, shown to their original audience, and attributed to an anonymous "deleted user" with no link back to the account. Private-space items are deleted. This replaces the v0.4 recommendation (A-35 removed). The GDPR note is in R-17 and 06 §4.2.
+- **NFR-06 / R-14**: managed Postgres **standby node accepted** (≈ +€9.9/month) and now part of the planned set-up (ADR-007, ADR-015, 03 §5/§10). The planned total becomes ≈ €108/month with Yahoo prices.
+- Q-03c, Q-07, Q-11, Q-15 moved to the owner's Todo list and stay open.
 
 ## What changed in v0.4
 
@@ -79,7 +86,7 @@ Owner decisions 2026-11-06 (via coordinator): **Q-02b** hosting option A accepte
 - **AuthZ:** resource-based policies in the application layer; "spaces" (private space, club space) with roles; per-item shares. [ADR-011]
 - **Async:** transactional outbox + Postgres job queue (`SKIP LOCKED`, `LISTEN/NOTIFY`) + `market.filing_event` feed from the batch plane. No message broker. [ADR-013]
 - **Prices:** EOD prices via a vendor-agnostic `PriceProvider` port; **V1 adapter Yahoo** (owner risk acceptance, against NFR-11); licensed replacement path marketstack → Tiingo. Cached last price with staleness indicator and attribution. [ADR-012]
-- **Hosting:** serving plane on **Scaleway (fr-par)** managed services; batch plane on **Hetzner** (VM + Object Storage); Cloudflare in front. ≈ €98/month planned (Yahoo prices, no vendor fee). [ADR-015, ADR-018, ADR-019]
+- **Hosting:** serving plane on **Scaleway (fr-par)** managed services; batch plane on **Hetzner** (VM + Object Storage); Cloudflare in front. ≈ €108/month planned incl. Postgres standby (Yahoo prices, no vendor fee). [ADR-015, ADR-018, ADR-019]
 - **Identity:** self-managed accounts (email + password, argon2id, email verification), server-side sessions. [ADR-016] **Notifications:** in-app + email via Scaleway Transactional Email (recommended). [ADR-017]
 
 ### C4 — System context
@@ -178,6 +185,7 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | BR-14 | Confirmed by owner 2026-11-06. No order/broker adapters; G-20 forbids moving investment money; the only payment integration is BC-11 for platform fees (FR-29); credits non-transferable, non-withdrawable; disclaimer in UI | 02 §16; ADR-001, ADR-020 |
 | BR-15 | One watcher instance per sector (`fdc-watch@<sector>`); SIC→sector map | 05 §7; ADR-006 |
 | BR-16 | `SourceCollector` plug-ins; FFIEC call report collector; every row carries `source` | 05 §8; ADR-002 |
+| BR-19 | Deletion saga Social step **anonymises** instead of deleting: posts/comments keep space, body, timestamps; `author_id` replaced by the platform's single `deleted_user` principal (no per-user pseudonym, no mapping kept); author profile link removed; embeds of the deleted user's private items render as placeholders (items deleted); private-space items deleted (FR-27) | 01 §5.7; 06 §4.2; 04 §4 |
 | BR-18 | Post belongs to exactly one space (`public` or `club:<id>`); policy: public-space posts + comments readable by any principal incl. `anonymous` visitor; club-space posts only by members; no per-post visibility field; embeds still checked per viewer | 01 §5.7; 06 §2.2; ADR-011 |
 | BR-17 | Builder sessions and every LLM call gated by `Entitlements.can_use` + credit `Reservation` (invariant: available ≥ 0); `RunTool` has no billing check; club builds billed to acting admin (A-25) | 01 §5.3, §5.9; 06 §3.5; ADR-010, ADR-020; G-24 |
 
@@ -224,11 +232,11 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | NFR-03 | Server-side rendering, per-company small DBs cached from object storage, Postgres read models, connection pooling; p95 budget per page; S-1 measures cold-start and cache-miss latency | 02 §12; 03 §3; 04 §6; ADR-019 |
 | NFR-04 | Watchers poll current feed every 15 min (configurable) + nightly reconcile → visible < 24 h | 05 §7; ADR-006 |
 | NFR-05 | EOD job after US close + alert evaluation on `PricesRefreshed` | 02 §8; ADR-012, ADR-013 |
-| NFR-06 | Managed container restarts, managed DB, serving independent of batch plane (published snapshots), resumable collector, backups on two providers; error budget 7.3 h/month | 03 §5–6; ADR-019 |
+| NFR-06 | Managed container restarts, **managed Postgres with standby node (synchronous replica, automatic failover; owner-accepted +€9.9)**, serving independent of batch plane (published snapshots), resumable collector, backups on two providers; error budget 7.3 h/month | 03 §5–6; ADR-019 |
 | NFR-07 | Host-wide token-bucket limiter (default 8 req/s) shared by all `fdc` processes; UA mandatory | 05 §6.3; ADR-005 |
 | NFR-08 | EU hosting (Scaleway FR, Hetzner DE/FI), EU sub-processors where possible, encrypted off-provider dumps, export/delete with billing pseudonymisation, private-by-default policies | 06 §4; ADR-011, ADR-015, ADR-016, ADR-020 |
 | NFR-09 | Declarative DSL, separate `tool-runner` with systemd sandbox, no network, no app DB access, quotas | 06 §3; ADR-009 |
-| NFR-10 | Costed options A–E within €50–200 incl. price vendor and email, excl. LLM; **accepted A** ≈ €98/month with Yahoo (≈ €141 with marketstack later) (managed serving plane + Hetzner batch); LLM paid by users (BR-17); no broker; budget alerts at €150/€190 | 03 §10; ADR-015, ADR-012, ADR-020 |
+| NFR-10 | Costed options A–E within €50–200 incl. price vendor and email, excl. LLM; **accepted A** ≈ €108/month with Yahoo and the Postgres standby (≈ €151 with marketstack later) (managed serving plane + Hetzner batch); LLM paid by users (BR-17); no broker; budget alerts at €150/€190 | 03 §10; ADR-015, ADR-012, ADR-020 |
 | NFR-11 | **Not met in V1 by owner decision (2026-11-06, Q-03b):** Yahoo prices used knowingly against its terms (ADR-012 §2); requirement text unchanged. Mitigations: port swap, `source` per price row, attribution/disclaimer, no raw price export; licensed replacement path marketstack (pending written display confirmation) → Tiingo; review recommended before public launch or first paid top-up. SEC/FFIEC public domain | ADR-012; R-03 |
 | NFR-12 | Python/uv; managed services reduce ops; SQLite/systemd kept for the collector; IaC (OpenTofu) for two providers; modular monolith; guidelines checklist | ADR-001, ADR-014, ADR-015 |
 
@@ -247,7 +255,7 @@ Added by the architect:
 | A-05 | A user may hold several portfolios; positions are per instrument with their own currency; portfolio value in a user-chosen base currency via ECB rates | 01 §5.4 |
 | A-06 | Plan accuracy = share of expectations met (each expectation met/not met/not evaluable); refinable later | 01 §5.4 |
 | A-07 | Clubs have no portfolio of their own in V1 (requirements list watchlist, plan, analyses, documents, tools) | 01 §5.6 |
-| A-08 | RPO ≤ 15 min (if provider PITR available, else ≤ 24 h for the beta, R-14) and RTO ≤ 4 h for the app DB; as-reported store is re-derivable from raw zips (RPO 24 h, RTO ≤ 2 days) | 03 §6 |
+| A-08 | RPO ≈ 0 for node failure (standby, NFR-06); for logical errors (bad migration, bug) RPO = provider PITR if available, else ≤ 24 h from dumps (R-14) and RTO ≤ 4 h for the app DB; as-reported store is re-derivable from raw zips (RPO 24 h, RTO ≤ 2 days) | 03 §6 |
 | A-09 | Tool quotas and LLM budgets are configuration values; defaults to be set by owner (Q-02) | 06 §3.6 |
 | A-10 | Platform operator is a role on a normal account (no separate admin app); moderation UI inside the web app | 06 §2 |
 | A-11 | Pro runs on its own infrastructure (Scaleway + a new Hetzner batch VM), not the existing 1 GB server hosting The Trader/screener | 03 §2 |
@@ -267,14 +275,16 @@ Added by the architect:
 | A-25 | Builder use in a club space is billed to the acting admin's own billing account | 01 §5.3; ADR-020 |
 | A-26 | Payment provider fees are paid from top-up revenue, outside NFR-10 | 03 §10.3 |
 | A-27 | Billing ledger, usage records and provider invoice refs are retained (pseudonymised) for the NL statutory bookkeeping period (7 years, to be confirmed by accountant) after account deletion | ADR-020; 06 §4.2 |
-| A-28 | Single-node managed Postgres (no HA standby) is acceptable for the beta under the 99 % SLO | 03 §5 |
+| A-28 | (superseded v0.5: managed Postgres runs with a standby node, NFR-06) | 03 §5 |
 | A-29 | Scaleway fr-par is acceptable EU hosting for GDPR (NL owner); nl-ams used if all needed products are available there | ADR-015 |
 | A-30 | Comments on public-space posts are readable by visitors too; only signed-in users comment | 06 §2.2 |
 | A-31 | Visitors see embedded companies (public data) in public posts; embedded portfolios/tools/analyses render as a placeholder unless shared with the community, and community shares remain signed-in only | 06 §2.2 |
 | A-32 | Posts are created only in the public space or a club space (not in private spaces); in a club space only admins and the super admin create posts, while members comment (consistent with BR-08 "read-only plus comments") | 01 §5.7 |
 | A-33 | Ownership transfer takes effect immediately with a notification to the new super admin (no acceptance step) | 01 §5.6 |
 | A-34 | Deleting a club deletes the club-space items and posts; copies already in members' private spaces (BR-10/BR-11) remain; members are notified | 01 §5.6 |
-| A-35 | On account deletion the user's own posts are deleted and their comments in others' threads are anonymised ("deleted user") — the v0.3 recommendation, not yet confirmed (Q-10a) | 06 §4.2 |
+| A-35 | (superseded v0.5 by BR-19: posts and comments of deleted users are kept and anonymised) | 06 §4.2 |
+| A-36 | Anonymisation uses one shared "deleted user" principal for all deleted accounts (no per-user pseudonym), so posts by the same deleted author cannot be linked together | 01 §5.7 |
+| A-37 | Before deleting their account a user can delete individual posts/comments themselves (normal FR-20 delete); the deletion flow reminds them of BR-19 and links to their posts | 06 §4.2 |
 
 ## 7. Risks
 
@@ -289,17 +299,18 @@ Added by the architect:
 | R-07 | (reduced in v0.4) Screener code access: all repos private; risk is now a leaked CI read token or a product repo accidentally left public | IP leak | fine-grained read-only token as BuildKit secret, never in images; owner confirms both product repos are private (C-7) |
 | R-08 | (closed in v0.2: managed Postgres from day one, ADR-007) | — | — |
 | R-09 | Club features read as a regulated activity (pooled money / advice) | legal | record-only enforced by design (BR-14, G-20); legal check before any pooled-money feature (Q-04) |
-| R-10 | Single-node managed DB and single batch VM | availability | 99 % SLO tolerates it; serving survives batch outage (ADR-019); HA standby option +€10; restore drills (03 §6) |
+| R-10 | Single batch VM (DB now has a standby) | availability of new filings | 99 % SLO tolerates it; serving survives batch outage (ADR-019); restore drills (03 §6) |
 | R-11 | Serverless Containers behaviour/cost for always-on worker or cold starts differs from estimate; runner egress cannot be blocked | cost, latency, isolation | spike S-1 before provisioning; fallback option C (Scaleway VM + systemd) keeps DB/storage/batch unchanged |
 | R-12 | Hetzner cloud types unavailable to order / further price rises | batch plane | AX41 dedicated fallback (€59); Scaleway VM option D |
 | R-13 | Yahoo feed changes, rate-limits or blocks without notice; data quality unguaranteed | stale prices, wrong alerts | low-frequency throttled fetch, circuit breaker, cached last price with staleness indicator, alerts suppressed on stale data, feed-broken alert + RB-03 adapter switch |
-| R-14 | Provider backups lack PITR | data loss up to 24 h of user records | verify in S-1; nightly dumps; consider more frequent dumps or Sliplane/Ubicloud (PITR) |
+| R-14 | (reduced v0.5) Node failure covered by the **accepted standby node** (NFR-06). Remaining: logical errors (bad migration, bug, mistaken delete) replicate to the standby; recovery depends on provider PITR (unverified) or nightly dumps | up to 24 h of user records only for logical errors | verify PITR in S-1; nightly encrypted dumps; pre-migration snapshot before every `alembic upgrade`; consider 6-hourly dumps if no PITR |
 | R-15 | Prepaid credits treated as vouchers/e-money or VAT/OSS/consumer-law set-up wrong (owner is seller with Stripe) | legal/tax | restricted credits (platform use only, non-transferable, non-withdrawable); customer country recorded per top-up; optional Stripe Tax; Paddle (MoR) fallback; accountant/legal check before first paid top-up (gate M5b, Q-15) |
 | R-16 | Two cloud providers increase ops surface | ops load | IaC for both, single runbook set, budget alerts on both |
+| R-17 | **GDPR residual (BR-19):** anonymised posts/comments may still identify the author by their content (style, self-references, names, portfolio details) — anonymisation is then incomplete and the text remains personal data | privacy, erasure requests (Art. 17) | privacy notice states BR-19 explicitly before sign-up and in the deletion flow; users can delete individual posts/comments before (or instead of) deleting the account (A-37); the deletion flow lists the user's posts with a "delete all my posts" option **only if the owner approves** (it would change BR-19 to opt-in); operator handles residual Art. 17 requests per post (redact/hide via FR-21 tools) and logs them; legal check advised |
 
 ## 8. Questions for the owner
 
-Options and the architect's recommendation: `07-roadmap.md` "Owner questions". Answered 2026-11-06: Q-01, Q-02, Q-02b (A), Q-03/Q-03b (Yahoo V1), Q-04, Q-05 (Claude), Q-06 (private repos), Q-08, Q-09 (BR-18), Q-10 clubs (BR-08), Q-12 (GitHub issues), Q-13 (Stripe), Q-14/Q-14b. Open: Q-03c licensed switch date, Q-07 email provider, Q-10a deletion of a user's own posts/comments (A-35), Q-11 object storage, Q-15 business set-up and VAT/OSS (owner + accountant).
+Options and the architect's recommendation: `07-roadmap.md` "Owner questions". Answered 2026-11-06: Q-01, Q-02, Q-02b (A), Q-03/Q-03b (Yahoo V1), Q-04, Q-05 (Claude), Q-06 (private repos), Q-08, Q-09 (BR-18), Q-10 clubs (BR-08), Q-10a (BR-19), R-14 standby, Q-12 (GitHub issues), Q-13 (Stripe), Q-14/Q-14b. Open (owner's Todo list): Q-03c licensed switch date, Q-07 email provider, Q-11 object storage, Q-15 business set-up and VAT/OSS (owner + accountant).
 
 ## ADR index
 
@@ -311,7 +322,7 @@ Options and the architect's recommendation: `07-roadmap.md` "Owner questions". A
 | ADR-004 | SEC bulk sources and per-accession loading policy | Accepted, scope gated by M0 |
 | ADR-005 | Incremental runs, run tracking, idempotency, SEC rate limit | Accepted |
 | ADR-006 | Per-sector watchers and per-filing gap fill | Accepted |
-| ADR-007 | Application database: managed PostgreSQL (EU) from day one | Accepted (Scaleway) |
+| ADR-007 | Application database: managed PostgreSQL (EU) with standby node | Accepted (Scaleway; standby v0.5) |
 | ADR-008 | Reconciliation layer and reuse of the screener core | Accepted (private git dependency, v0.4) |
 | ADR-009 | User-built tools: declarative DSL + sandboxed runner | Accepted |
 | ADR-010 | LLM for the conversational tool builder (premium, user-paid, metered): Anthropic Claude | Accepted |

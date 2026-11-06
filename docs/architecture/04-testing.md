@@ -53,6 +53,9 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | BR-09 | unit | `tests/unit/shared/test_authz_matrix.py::test_club_members_read_and_comment_all_documents` | planned |
 | BR-18 | unit | `tests/unit/shared/test_authz_matrix.py::test_public_space_post_readable_by_anonymous`, `::test_anonymous_cannot_comment`, `::test_club_post_hidden_from_non_members_and_anonymous`, `::test_anonymous_denied_everything_else`; `tests/unit/social/test_post.py::test_post_space_immutable`, `::test_member_cannot_create_club_post` | planned |
 | BR-18 | e2e | `tests/e2e/test_posts.py::test_visitor_reads_public_post`, `::test_club_post_only_for_members` | planned |
+| BR-19 | unit | `tests/unit/social/test_anonymise.py::test_posts_and_comments_kept_with_deleted_user_author`, `::test_no_link_to_former_account_retained`, `::test_audience_unchanged_after_anonymisation`, `::test_embedded_private_items_render_placeholder` | planned |
+| BR-19 | integration | `tests/integration/identity/test_gdpr.py::test_delete_saga_keeps_posts_deletes_private_items`, `::test_anonymisation_idempotent_on_retry` | planned |
+| BR-19 | e2e | `tests/e2e/test_account_deletion.py::test_deleted_users_post_shows_deleted_user` | planned |
 | BR-10 | unit | `tests/unit/tools/test_tool.py::test_import_to_club_creates_copy_with_provenance`, `::test_tool_built_in_club_space` | planned |
 | BR-11 | integration | `tests/integration/clubs/test_mark_as_bought.py::test_creates_position_with_reason_and_copies`, `::test_copies_editable_originals_unchanged`, `::test_atomic_on_failure` | planned |
 | BR-11 | e2e | `tests/e2e/test_clubs.py::test_mark_as_bought_flow` | planned |
@@ -97,7 +100,7 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 - **Resilience:** kill worker mid-job → job retried, no duplicate email; kill backfill mid-quarter → rerun completes with no duplicates (BR-05).
 - **Collector memory (NFR-02):** M0 measurement and a regression test that streams a 200 MB synthetic data set with RSS < 512 MB (nightly, `-m slow`).
 - **Rate limit (NFR-07):** unit test of token bucket across processes; integration with fake server counting requests/second.
-- **Backup/restore (NFR-06):** weekly automated dump-restore test + quarterly drill RB-05 recorded.
+- **Backup/restore and failover (NFR-06):** weekly automated dump-restore test, a quarterly drill RB-05, and one recorded standby failover test in staging or prod before beta (connection retry works, no data loss).
 - **Billing (FR-29):** monthly reconciliation RB-09 (usage records vs LLM invoice ≤ 1 % gap).
 
 ## 7. Regression suite
