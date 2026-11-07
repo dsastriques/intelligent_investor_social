@@ -1,6 +1,6 @@
 # 06 — Security, authorization, tool sandbox and GDPR (topics T4, T6, part of T8)
 
-Serves BR-06..BR-11, BR-17, BR-18, FR-11, FR-19..FR-29, NFR-08, NFR-09, NFR-10. v0.2: runner isolation moved to a private container (ADR-015), billing threats and premium gating added (ADR-020).
+Serves BR-06..BR-11, BR-17, BR-18, BR-20..BR-25 (scripts, v0.7), FR-11, FR-19..FR-29, FR-33, FR-34, NFR-08, NFR-09, NFR-10. v0.2: runner isolation moved to a private container (ADR-015), billing threats and premium gating added (ADR-020).
 
 ## 1. Threat model (summary)
 
@@ -17,6 +17,8 @@ Serves BR-06..BR-11, BR-17, BR-18, FR-11, FR-19..FR-29, NFR-08, NFR-09, NFR-10. 
 | Payment data exposure | cards | Stripe hosted Checkout (PCI SAQ-A), no card data stored; Stripe is a sub-processor (owner is seller) |
 | Webhook spoofing/replay | billing | signature verification, unique provider event id, Cloudflare rate limit on `/billing/webhook` |
 | SEC block for over-fetching | collector | host-wide rate limiter, UA (NFR-07) |
+| Malicious or runaway user **script** (CPU, memory, deep recursion, huge numbers, crafted strings) | runner, worker | own grammar, no `eval`; static limits at save; step counter, Decimal exponent cap, explicit-stack evaluator; user closures only in the runner; bound inputs only, no data access (§3.7) |
+| Script used to exfiltrate someone's formula | user content | pin requires `copy`; spec shown only with `read`; run embeds show results and trace, not the formula, to viewers without `read` (Q-17) |
 | Regulatory exposure | platform | record-only (BR-14, G-20), disclaimers |
 
 ## 2. Authorization model (T6, ADR-011)
@@ -38,8 +40,8 @@ allowed(principal, action, item):
       share = active share for item matching (community or principal)    # BR-07, FR-19
       if share is None: return False
       if action == read: return True
-      if action == run and item.type == tool and 'run' in share.perms: return True
-      if action == copy and item.type in (tool, plan, analysis): return True   # A-R9
+      if action == run and item.type in (tool, script) and 'run' in share.perms: return True      # v0.7 scripts
+      if action == copy and item.type in (tool, script, plan, analysis): return True   # A-R9; also needed to pin a script (A-50)
       if action == comment and item.type in (portfolio, analysis, tool): return True  # comments on shared items (A-16)
       return False
   if space.kind == public:                                              # BR-18 (only posts live here)
@@ -53,7 +55,7 @@ allowed(principal, action, item):
       if role is None: return community/user share rules as above (club may share items too)
       if action in (read, comment): return True                          # BR-09; BR-18 club posts members-only
       if action == create and item.type == post: return role in (admin, super_admin)   # A-32
-      if action == run and item.type == tool: return True                # members run club tools (A-17)
+      if action == run and item.type in (tool, script): return True      # members run club tools and scripts (A-17)
       if action == copy: return True                                     # BR-11 copies, BR-10 imports
       if action in (edit, delete, share): return role in (admin, super_admin)   # BR-08 admins edit documents
       return False
@@ -126,6 +128,14 @@ User tools are **declarative ToolSpecs** (a JSON DSL) — not arbitrary Python. 
 - Inputs needed from private space (e.g. a user's watchlist as universe) are resolved **by the worker** after authorization and passed as a list of company ids — the runner never sees other users' data.
 - Results returned in the HTTPS response and stored by the worker as `ToolRun` in the caller's space.
 
+### 3.3a Script evaluator isolation (v0.7, ADR-022, NFR-09)
+- **Trust split:** a closure of built-in scripts only (platform code, reviewed) is evaluated in-process in the worker or web. A closure that contains any user script is evaluated only in `iip-tool-runner` (runner protocol 2), whoever owns it (own, shared, copied, club).
+- **No data access in the sandbox:** the worker binds inputs (after authorization) and sends `{closure, bound inputs, limits}`. Script runs need no snapshot URL, so the runner has nothing to read and no credentials.
+- **Interpreter hardening:** Lark LALR parser with a source-size cap; typed AST; tree walk with an explicit stack (no Python recursion), a step counter (100k), Decimal context with precision 34 and exponent ±99 (bounds memory of huge numbers); `^` exponent |y| ≤ 1,000; series ≤ 1,300 values; closure ≤ 32 scripts; no string operations beyond reason literals (reasons ≤ 200 chars, rendered escaped).
+- **Fail closed:** any limit hit → `undefined("calculation limit exceeded")`; any internal error → `undefined("internal evaluation error")` + alert; a runner timeout → run status `undefined` "evaluation timed out" (never retried with larger limits).
+- **Integrity:** the runner recomputes the content hash of each closure spec and refuses mismatches; outputs are validated against the declared types before being stored.
+- **Tests:** hypothesis fuzzing of grammar and evaluator (no crash, no limit overrun, determinism), differential tests (Decimal vs reference) for arithmetic, image inspection (G-25).
+
 ### 3.4 Run flow
 
 ```mermaid
@@ -155,8 +165,11 @@ sequenceDiagram
 - The LLM never receives other users' data; only the user's own conversation and the public identifier catalogue. Prompt-injection impact is bounded to producing a (validated, sandboxed) spec.
 - Data processing agreement with the LLM vendor; prefer EU data residency/zero-retention options where available (Q-05).
 
+### 3.5a Conversational script builder (v0.7, FR-33, ADR-010)
+Same session machinery, gate and metering as §3.5, with `artefact = script`: structured output = ScriptSpec schema; static validation (08 §3.3) errors go back to the LLM (≤ 3 repairs); dry run on 5 sample companies in the runner (not metered); the user publishes a new version. Only public catalogue data (vocabulary, functions, built-ins) and the user's own conversation/drafts, plus scripts the user may copy and chose to pin, go to the LLM vendor.
+
 ### 3.6 Quotas, metering and cost control (NFR-10, BR-17, A-09)
-v0.2: LLM cost is paid by users (BR-17), so LLM limits are **safety** limits, not budget limits. Config values (owner to set): tool runs per user/day (50), concurrent runs per user (1) — protect shared compute, free for all users; builder: per-user daily token ceiling (abuse/bug guard), global token-rate alarm and `llm_kill_switch`; max universe size per run (cost-estimated). Metering per LLM call into `UsageRecord` (ADR-020); user-facing usage page per session/month; operator view revenue vs vendor cost (RB-09).
+v0.2: LLM cost is paid by users (BR-17), so LLM limits are **safety** limits, not budget limits. Config values (owner to set): tool runs per user/day (50), script runs per user/day (500, A-52; memo hits not counted), concurrent runs per user (1) — protect shared compute, free for all users; builder: per-user daily token ceiling (abuse/bug guard), global token-rate alarm and `llm_kill_switch`; max universe size per run (cost-estimated). Metering per LLM call into `UsageRecord` (ADR-020); user-facing usage page per session/month; operator view revenue vs vendor cost (RB-09).
 
 ## 4. Privacy and GDPR (NFR-08, FR-27)
 
@@ -168,7 +181,7 @@ v0.2: LLM cost is paid by users (BR-17), so LLM limits are **safety** limits, no
 
 ### 4.2 Export and deletion
 - `ExportMyData` → worker builds a ZIP (JSON per context + Markdown of posts/plans) and emails a time-limited download link (or in-app download), within minutes.
-- `DeleteAccount` → account `pending_deletion`, sessions revoked → **deletion saga** job steps, each idempotent and resumable: Portfolio & Plans (delete), Tools (delete private tools; tools copied by others remain theirs), Watchlists & Alerts (delete), Social (delete shares; **BR-19: posts and comments are kept and anonymised**: `author_id` → shared `deleted_user`, profile link removed, no mapping retained, audience unchanged), Clubs (**precondition, FR-27/BR-08:** `DeleteAccount` is refused until the user has chosen *transfer to member X* or *delete club* for every club they own; the UI lists those clubs. The saga's first step executes the choices, then the user leaves all other clubs), Notifications (delete), **Billing (pseudonymise ledger/usage records, keep for the statutory period A-27; release open reservations; unused credit refunded on request within the legal window (ADR-020, Q-14b))**, Identity (delete account row, keep a salted hash of the email for 30 days to prevent abuse re-signup — ASSUMPTION A-19). Backups age out within the retention window (35 days; provider backup retention per S-1), stated in the privacy notice.
+- `DeleteAccount` → account `pending_deletion`, sessions revoked → **deletion saga** job steps, each idempotent and resumable: Portfolio & Plans (delete), Tools (delete private tools and scripts; tools and scripts copied by others, and other users' dependents with vendored closures (ADR-024), remain theirs; cited script runs embedded in kept posts stay with the post as frozen results), Watchlists & Alerts (delete), Social (delete shares; **BR-19: posts and comments are kept and anonymised**: `author_id` → shared `deleted_user`, profile link removed, no mapping retained, audience unchanged), Clubs (**precondition, FR-27/BR-08:** `DeleteAccount` is refused until the user has chosen *transfer to member X* or *delete club* for every club they own; the UI lists those clubs. The saga's first step executes the choices, then the user leaves all other clubs), Notifications (delete), **Billing (pseudonymise ledger/usage records, keep for the statutory period A-27; release open reservations; unused credit refunded on request within the legal window (ADR-020, Q-14b))**, Identity (delete account row, keep a salted hash of the email for 30 days to prevent abuse re-signup — ASSUMPTION A-19). Backups age out within the retention window (35 days; provider backup retention per S-1), stated in the privacy notice.
 - **FR-30 "Delete all my content" (any time):** hard-deletes all of the user's posts and comments in the public space and every club (including clubs they left), up to the confirmation cut-off. It needs re-authentication and a confirmation screen listing counts and "this cannot be undone". Only the author can run it, for themselves. The account and private space stay; shares are revoked (A-40). The operator sees only the audit entry. Deleted rows stay in backups until those age out (35 days, A-42).
 - **BR-19 residual GDPR point (R-17):** an anonymised post can still identify its author through its content, in which case it stays personal data. **FR-30 is now the primary mitigation**: the user can remove all their content before (or instead of) deleting the account. Further mitigations:
   1. The privacy notice and terms state BR-19, shown at sign-up and again in the deletion flow, which offers FR-30 before continuing.

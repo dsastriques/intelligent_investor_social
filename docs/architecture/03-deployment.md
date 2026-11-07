@@ -16,7 +16,7 @@ flowchart TB
     worker[iip-worker<br/>Serverless Container, min 1<br/>jobs, scheduler, LLM, email, webhooks]
     runner[iip-tool-runner<br/>private Serverless Container, scale to 0<br/>no DB role, no secrets]
     pg[(Managed PostgreSQL<br/>schemas app + market)]
-    os1[(Object Storage one-zone<br/>iip-store: published store + analysis snapshots)]
+    os1[(Object Storage one-zone<br/>iip-store: published store, concept-fact files v0.7,<br/>analysis snapshots)]
     tem[Transactional Email]
     cockpit[Cockpit logs/metrics]
     reg[Container Registry + Secret Manager]
@@ -100,10 +100,10 @@ Restore drill quarterly (RB-05). Never in GitHub. Backups age out within 35 days
 
 ## 7. Observability and troubleshooting
 
-- **Logs:** structlog JSON to stdout → Scaleway Cockpit (included retention for Scaleway products: 1 week logs, 1 month metrics; [Scaleway](https://scaleway.com/en/pricing/managed-services)). Batch VM: journald 30 days + optional shipping to Cockpit (€0.35/GB, low volume). Correlation ids: `request_id`, `job_id`, `run_id`, `tool_run_id`, `collector_run_id`, `builder_session_id`, `reservation_id`.
-- **Metrics:** request latency per route, queue depth/age, tool run durations, **LLM tokens and charged EUR per hour**, open reservations, webhook failures, email failures, price refresh age, snapshot age, collector counters. `/ops` page for the operator.
+- **Logs:** structlog JSON to stdout → Scaleway Cockpit (included retention for Scaleway products: 1 week logs, 1 month metrics; [Scaleway](https://scaleway.com/en/pricing/managed-services)). Batch VM: journald 30 days + optional shipping to Cockpit (€0.35/GB, low volume). Correlation ids: `request_id`, `job_id`, `run_id`, `tool_run_id`, `script_run_id`, `collector_run_id`, `builder_session_id`, `reservation_id`.
+- **Metrics:** request latency per route, queue depth/age, tool run durations, script runs (count by status ok/undefined/missing_input, evaluation location, memo hit rate, runner p95), **LLM tokens and charged EUR per hour**, open reservations, webhook failures, email failures, price refresh age, snapshot age, collector counters. `/ops` page for the operator.
 - **SLIs/SLOs:** availability 99 %; page p95 < 2 s (NFR-03); filings visible < 24 h (NFR-04); prices by 08:00 CET next trading day (NFR-05); metering reconciliation gap ≤ 1 % per month (FR-29).
-- **Alerts:** health fail > 5 min; price refresh missed; snapshot older than 36 h; queue age > 15 min; batch disk > 80 %; dump missing; webhook signature failures; reservations open > 15 min; LLM token rate > safety limit (`llm_kill_switch`).
+- **Alerts:** health fail > 5 min; price refresh missed; snapshot older than 36 h; queue age > 15 min; batch disk > 80 %; dump missing; webhook signature failures; reservations open > 15 min; script `internal evaluation error` > 0 per hour or runner script p95 > 1 s; LLM token rate > safety limit (`llm_kill_switch`).
 - **Runbooks** (`deploy/runbooks/`): RB-01 SEC 403/429 · RB-02 backfill crashed / disk full · RB-03 price refresh failed · RB-04 Postgres slow queries / connections exhausted (v0.1 "SQLite locked" replaced) · RB-05 restore Postgres from provider backup or dump; restore store from bundle · RB-06 runner saturation · RB-07 LLM vendor outage or kill switch: builder paused, reservations released · RB-08 GDPR request · **RB-09 monthly billing reconciliation** (usage records vs LLM vendor invoice vs payment provider payouts) · **RB-10 webhook backlog / missed webhook** (replay from provider dashboard; idempotent inbox).
 
 ## 8. CI/CD
@@ -176,10 +176,12 @@ LLM tokens are paid by premium users (BR-17, ADR-010/020). Payment provider fees
 4. Batch VM: Debian 12, unattended upgrades, users `fdc` and `iip-batch`, `/srv/fdc/{store,staging,raw}`, uv + Python 3.12, sqlite3, `age`, `pg_dump` (client version = server); `deploy/batch/install.sh`; env `/etc/fdc/fdc.env` (incl. `EDGAR_USER_AGENT`, bucket keys, `iip_batch` DSN).
 5. systemd units on the batch VM per §9, all wrapped with healthchecks.io pings.
 6. Cloudflare: zone, proxied DNS to the web container, WAF managed rules, rate limits (`/auth/*`, `/api/*`, `/billing/webhook`), Turnstile keys, Access policy for `staging.` and `/ops`.
-7. Container images: `Dockerfile` (python:3.12-slim, uv, non-root user); separate minimal image for the runner (only `iip.tools.dsl` + readers, no DB drivers, no SDKs).
+7. Container images: `Dockerfile` (python:3.12-slim, uv, non-root user); separate minimal image for the runner (only `iip.tools.dsl`, `iip.tools.expr`, `iip.tools.scripts` kernel + built-ins, the screener's pure modules, readers; no DB drivers, no SDKs).
 8. CD workflow per §8 with the `prod` environment requiring owner approval; scoped Scaleway API keys.
 9. Postgres standby node enabled (NFR-06) and a failover test done. Backups: verify provider backup retention/PITR; nightly encrypted dump; pre-migration snapshot; weekly restore test; RB-05 drill once before beta.
 10. Observability: Cockpit dashboards (latency, queue, tokens/charges, snapshot age, price age), alerts per §7, `/health` wired to the Cloudflare health check.
 11. Stripe account (test mode first): Products/Prices for top-up amounts, Checkout, webhook endpoint `/billing/webhook` for `checkout.session.completed`, `checkout.session.async_payment_succeeded`/`_failed`, `charge.refunded`, `charge.dispute.created`; webhook signing secret and restricted API key in Secret Manager; live mode only after gate M5b.
 12. Runbooks RB-01..RB-10 in `deploy/runbooks/`.
 13. Record actual monthly cost in §10 after the first full month.
+14. (v0.7) `iip reconcile` publishes per-company concept-fact files under `iip-store/std/` (same lifecycle as store keys); `market.company_std_version` table; measure file sizes and rebuild time on a full sector (R-19) and record here.
+15. (v0.7) Deploy step `iip scripts load-builtins` (idempotent by content hash; fails the release if a published built-in version's hash would change, G-29).

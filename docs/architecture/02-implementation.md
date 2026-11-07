@@ -1,6 +1,6 @@
 # 02 — Implementation architecture
 
-v0.2 (2026-11-06): managed Postgres (ADR-007), two-plane hosting (ADR-015), store publication (ADR-019), Billing & Entitlements context (ADR-020), price vendor (ADR-012).
+v0.7 (2026-11-07): scripts (08; ADR-021..024): `tools/scripts` and `tools/expr` packages, binder in `reconciliation`, runner protocol 2, guidelines G-27..G-30. v0.2 (2026-11-06): managed Postgres (ADR-007), two-plane hosting (ADR-015), store publication (ADR-019), Billing & Entitlements context (ADR-020), price vendor (ADR-012).
 
 ## 1. Architecture style (ADR-001)
 
@@ -14,8 +14,8 @@ Processes (all from `iip` package unless noted):
 |---|---|---|
 | `iip-web` | FastAPI (uvicorn), Jinja + HTMX pages, JSON API, payment webhook endpoint (store-and-ack only) | user traffic |
 | `iip-worker` | outbox relay, job queue consumers, scheduler (advisory lock), prices, alerts, plan reviews, filing-event consumption, analysis snapshot build, LLM builder calls with metering, webhook processing, email | keeps slow/external work off request path |
-| `iip-tool-runner` | DSL evaluator in a private container with no DB role and no secrets (ADR-009, 06 §3.3) | isolation of user-built tools (NFR-09) |
-| `iip reconcile` (batch plane) | Reconciliation (BC-3) job on the Hetzner box, writes `market.std_*` | CPU/IO heavy, next to the store of record (ADR-019) |
+| `iip-tool-runner` | DSL evaluator and **script kernel** in a private container with no DB role and no secrets (ADR-009, ADR-022, 06 §3.3) | isolation of user-built tools and scripts (NFR-09) |
+| `iip reconcile` (batch plane) | Reconciliation (BC-3) job on the Hetzner box, writes `market.std_*` and publishes per-company concept-fact files (ADR-023) | CPU/IO heavy, next to the store of record (ADR-019) |
 | `fdc-*` (collector repo) | backfill, feed, watchers, FFIEC, publish | different release cadence, public data repo, CPU/IO heavy |
 
 ## 2. Repositories (T9, ADR-002)
@@ -57,6 +57,9 @@ intelligent_investor_social/
     market/                 # BC-2
     reconciliation/         # BC-3
     tools/                  # BC-4 (+ builtins/ adapters around screener core, dsl/)
+      expr/                 # v0.7 shared expression core: Lark grammar, typed AST, type checker, Decimal interpreter (ADR-022)
+      scripts/              # v0.7 Script aggregate, ScriptSpec schema, kernel, closure resolver, ScriptRun (ADR-021, ADR-024)
+        builtins/           #   catalogue/*.json + Python built-ins calling the screener core (08 §7)
     portfolio/              # BC-5
     watchlists/             # BC-6
     social/                 # BC-7
@@ -65,7 +68,7 @@ intelligent_investor_social/
     billing/                # BC-11 Billing & Entitlements (ADR-020)
     platform/               # composition root: settings, DI wiring, outbox relay, job runner, web app factory
     web/                    # templates, static, HTMX partials, page routers (thin; call application services)
-    runner/                 # tool-runner entry point (imports only tools.dsl + read-only data readers)
+    runner/                 # tool-runner entry point (imports only tools.dsl, tools.expr, tools.scripts.kernel + builtins, read-only data readers)
   tests/{unit,integration,contract,e2e,nfr}/
   deploy/                   # Dockerfiles, infra/ (OpenTofu: Scaleway + Hetzner), batch/ (systemd units, install.sh, pg_dump), runbooks/
   docs/architecture/
@@ -110,6 +113,25 @@ class ToolRunner(Protocol):       def run(self, spec: ToolSpec, inputs: RunInput
 class LlmClient(Protocol):        def complete(self, messages: list[Msg], schema: JsonSchema, budget: TokenBudget) -> LlmReply: ...
 class BuiltinTool(Protocol):      id: str; def run(self, universe: Sequence[CompanyData], params: Mapping[str, Any]) -> ToolOutput: ...
 
+# tools.scripts (v0.7, ADR-021..024)
+class ScriptRepository(Protocol):
+    def get_version(self, ref: ScriptRef) -> ScriptVersion: ...            # immutable; vendored closure included
+    def publish(self, draft: ValidatedDraft, author: Principal) -> ScriptVersion: ...
+class InputBinding(Protocol):     # facade of BC-3, consumed by tools
+    def bind(self, company_id: CompanyId, as_of: date, basis: Basis, currency: str | None,
+             requirements: Sequence[InputRequirement]) -> BindingOutcome: ...   # Bindings | Missing[] with traces
+class ScriptEvaluator(Protocol):  # in-process kernel or runner client (selected by closure trust)
+    def evaluate(self, closure: Closure, inputs: BoundInputs, limits: Limits) -> ScriptResult: ...
+class BuiltinScript(Protocol):    ref: ScriptRef; def __call__(self, inputs: BoundInputs) -> ScriptOutputs: ...
+
+# reconciliation (v0.7)
+class ConceptFactSource(Protocol): def facts(self, company_id: CompanyId, concepts: Set[str]) -> ConceptFacts: ...  # published file, all vintages
+class MarketDataReader(Protocol):  # BC-2 facade
+    def close_on_or_before(self, instrument: InstrumentId, d: date, max_lag_days: int) -> DailyClose | None: ...
+    def closes(self, instrument: InstrumentId, end: date, n: int) -> Sequence[DailyClose]: ...
+    def splits(self, instrument: InstrumentId, after: date, until: date) -> Sequence[Split]: ...
+    def fx(self, src: str, dst: str, on: date | DateRange) -> FxQuote | None: ...
+
 # billing (BC-11) - facade used by tools
 class Entitlements(Protocol):     def can_use(self, principal: Principal, feature: Feature) -> EntitlementDecision: ...
 class Metering(Protocol):
@@ -139,6 +161,8 @@ class EmailSender(Protocol):      def send(self, to: str, template: str, ctx: Ma
   4. Records progress and resumes after a crash.
   5. Emits events through the outbox and finally `ContentPurged`, which notifies the user.
   Content the user creates after the cut-off is kept. The UI says so: "content you post after confirming is not affected". The job is idempotent: rerunning deletes 0. Only one purge per account is active (unique partial index on `status in (pending, running)`). If the account deletion saga starts while a purge is running, it waits for the purge to finish first.
+- **Run a script (FR-34, 08 §6):** `POST /api/v1/scripts/{id}/versions/{n}/runs {company_id, as_of?, basis?, currency?}` → policy `run` + quota → memo lookup → else enqueue `scripts.run` job: load version + closure → `InputBinding.bind` → `missing_input` short-circuits → `ScriptEvaluator` (in-process for built-in-only closures, runner otherwise) → save `ScriptRun` + `ScriptRunCompleted` in one UoW. Company pages may evaluate **built-in-only** closures synchronously (key-ratio panel) through the same use case with the memo.
+- **Publish a script version (FR-31/33):** from a builder session or the built-in catalogue loader: static validation (08 §3.3) → closure resolution with authZ on each pinned source (`copy`) → content hash → insert `tl_script_version` + vendored closure → `ScriptVersionPublished`.
 - **Builder call with metering (BR-17, FR-29, ADR-010/020):** worker job `builder.message`: (1) `Entitlements.can_use` → (2) count input tokens, compute worst case from `PriceTable` → (3) `Metering.reserve` in its own short transaction (row lock on billing account) → (4) call `LlmClient` (outside any DB transaction) → (5) `Metering.settle` with vendor usage + save BuilderSession message in one UoW → on error `release`. A sweeper job expires reservations older than 15 min.
 - **Top-up (FR-29):** web `POST /billing/checkout` → `PaymentGateway.create_checkout` → user pays on provider page → provider webhook `POST /billing/webhook` → web verifies signature, inserts `bl_webhook_inbox` (unique event id), returns 200 → worker job `HandleProviderEvent` → ledger `top_up` + `CreditToppedUp` event.
 
@@ -153,7 +177,11 @@ class EmailSender(Protocol):      def send(self, to: str, template: str, ctx: Ma
 | Anti-corruption layer | FFIEC adapter, Reconciliation, price vendor adapter, screener wrapper | BR-02, BR-16, FR-10, NFR-11 |
 | Published language / open host | store schema v1 + `store_client` + `filing_event` feed | FR-05, FR-08, BR-02 |
 | Specification | ToolSpec filters/rules; alert conditions | FR-11, FR-17 |
-| Interpreter (DSL) | ToolSpec evaluator | FR-11, NFR-09 |
+| Interpreter (DSL) | ToolSpec evaluator; shared expression core and script kernel (v0.7) | FR-11, FR-33, NFR-09 |
+| Composite + memoisation (pure function, content-addressed keys) | script closures, binding and evaluation memo | BR-22, NFR-03 |
+| Immutable versioned artefact + vendored closure | ScriptVersion | BR-22, BR-07 |
+| Null-object result / status instead of exceptions | ScriptResult (`undefined`, `missing_input`) | BR-25 |
+| Point-in-time (bitemporal-lite) read | binder `as_known` over concept-fact vintages | BR-03, FR-34 |
 | Domain events + transactional outbox | `app.outbox` table, relay in worker (LISTEN/NOTIFY wake-up) | FR-12, FR-17, FR-18 reliable delivery |
 | Idempotent consumer | `processed_event(consumer, event_id)`; email idempotency keys; collector loads keyed by `adsh` | BR-05, FR-18 |
 | Retry with backoff + circuit breaker | SEC, price vendor, LLM, email gateways | NFR-06, NFR-07 |
@@ -201,6 +229,11 @@ Wrappers implementing `BuiltinTool` around the screener's pure functions (no cop
 Settings: the screener's `Settings` (config.yaml) become **tool parameters** with the screener defaults; users can override within validated ranges (copying a built-in into their space as a parameterised user tool).
 Stateful screener parts (watchlist selection history, guardrail approvals, Telegram, dashboard, EODHD/Yahoo providers, `storage`) are **not** reused; their Pro equivalents are Watchlists, Notifications, and the web UI.
 
+### 9.3 Built-in scripts and the binder (v0.7, FR-32, ADR-021..024)
+- The screener's per-company calculations are also exposed as **built-in scripts** (catalogue in 08 §7.2): formula scripts for one-liners (EV, Debt-to-EV, P/E, net debt, margins, yields, Graham number, EPV), and Python built-ins that **call** the screener functions (`rules._roic`, `prices.intrinsic_value`, `guardrail.scores.*`) on a minimal `AnnualFinancials` assembled from bound inputs. Golden parity tests vs the screener (08 §7.3).
+- FR-10 built-in tools stay wrappers around the screener's composite functions over `CompanyData`; their key figures link to the matching script so a user can open the trace. Re-expressing tools on scripts is part of the tool design (Q-18).
+- Reconciliation adds the **concept vocabulary** v1 and the **binder** (`reconciliation/domain/binding.py`, `reconciliation/application/bind_script_inputs.py`), reading per-company concept-fact files (all vintages) and BC-2 market data (08 §4).
+
 ## 10. API contracts
 
 - **Web UI:** server-rendered routes (`/companies/{id}`, `/portfolios/{id}`, `/tools/{id}`, `/clubs/{id}/…`), HTMX partials under `/hx/...`. CSRF tokens on all unsafe methods.
@@ -215,6 +248,8 @@ Stateful screener parts (watchlist selection history, guardrail approvals, Teleg
   - `GET /api/v1/me/export` · `DELETE /api/v1/me`
 - **Internal async contract:** `filing_event` rows (published by collector), outbox event envelope `{id, type, version, occurred_at, aggregate, payload}` (AsyncAPI-style schema in `docs/architecture/events/` when implemented).
 - **Tool-runner contract:** JSON over HTTPS to the private runner container (worker token): `{spec, inputs, limits, snapshot_url, snapshot_seq}` → `{status, rows, metrics, usage}` (`runner_protocol: 1`).
+  - v0.7 `runner_protocol: 2` adds `{kind: "script", closure: [ScriptSpec + hash…], inputs: BoundInputs, limits}` → `ScriptResult` (08 §2.3). Bound inputs carry their currency tags; no snapshot URL; the runner verifies closure hashes before evaluating. `kind: "tool"` = protocol 1 body.
+- **Scripts API (v0.7):** `GET /api/v1/scripts?space=` (catalogue + own + shared) · `GET /api/v1/scripts/{id}/versions/{n}` (spec, closure, for viewers with `read`) · `POST /api/v1/scripts/{id}/versions/{n}/runs` · `GET /api/v1/script-runs/{id}` · `POST /api/v1/scripts/{id}/copy` · `POST /api/v1/script-builder/sessions` (premium) · `GET /api/v1/concepts?vocabulary=1` (public vocabulary). Embeds `script_run:<id>` in posts (FR-20).
 - **Billing endpoints:** `GET /api/v1/billing` (balance, available, usage by session/month), `POST /api/v1/billing/checkout` (top-up product → provider URL), `POST /billing/webhook` (provider → inbox; no session auth, signature-verified).
 
 ## 11. Data storage per context
@@ -225,19 +260,21 @@ Stateful screener parts (watchlist selection history, guardrail approvals, Teleg
 | Postgres schema `market` | same instance | Market Data, Reconciliation (written by batch role) | instruments, prices, FX, std_financials, lineage, filing_event, company_store_version, read models | same (rebuildable) |
 | as-reported store | SQLite catalog + per-company files on the batch VM; published immutable copies on Scaleway Object Storage (ADR-019) | Filings (collector) | public filings | raw zips in object storage + weekly `fdc export` bundle (rebuildable) |
 | analysis snapshot | SQLite file on object storage, rebuilt after reconcile/price refresh | Tools (read-only input to runner) | public data only | rebuildable |
+| concept-fact files (v0.7) | per-company SQLite on object storage `std/<company_id>/<hash>.sqlite`, pointer `market.company_std_version` | Reconciliation (written on batch plane) | public data only, every vintage | rebuildable from store |
+| scripts (v0.7) | Postgres `app`: `tl_script`, `tl_script_version` (immutable, trigger), `tl_script_run` | Tools | user content (formulas) and run traces of public data | provider backups + dumps |
 | raw archive | files + EU object storage | Filings | SEC/FFIEC zips | object storage is the copy |
 
 - Table prefix per context in schema `app` (`id_`, `pf_`, `wl_`, `tl_`, `so_`, `cl_`, `nt_`, `bl_`) — schema ownership; no cross-context foreign keys except to `id_account`/`id_space`.
 - Migrations: Alembic, forward-only in prod, each migration with a tested downgrade for dev; expand/contract for breaking changes.
 - Consistency: strong within schema `app` (incl. billing ledger); eventual between collector → publish → `market` → alerts (minutes).
 - Caching: in-process LRU for company read models and statements (keyed by `filing_event.seq`), HTTP caching via Cloudflare for static assets only (pages are per-user).
-- Retention: prices and filings kept indefinitely; tool run results 90 days (ASSUMPTION A-14) except the last per tool; notifications 180 days; logs per Cockpit retention (03 §7); billing ledger and usage records for the statutory period, pseudonymised after account deletion (A-27).
+- Retention: prices and filings kept indefinitely; tool run results 90 days (ASSUMPTION A-14) except the last per tool; script runs 90 days except runs cited in posts, kept while cited (A-51); script versions kept while the script exists (dependents keep vendored closures, ADR-024); notifications 180 days; logs per Cockpit retention (03 §7); billing ledger and usage records for the statutory period, pseudonymised after account deletion (A-27).
 - Time: all timestamps UTC ISO-8601 in storage; display in the user's time zone; trading dates as `date`.
 - Money/quantities: `Decimal` in domain, stored as TEXT; currencies ISO-4217.
 
 ## 12. Performance budget (NFR-03)
 
-Company page: catalog lookup + one company file + std read model → server time ≤ 300 ms p95; portfolio page: ≤ 50 positions × latest price ≤ 200 ms. Pages are server-rendered with deferred HTMX loads for heavy panels (notes, revisions). Measured by the NFR suite (04 §6).
+Company page: catalog lookup + one company file + std read model → server time ≤ 300 ms p95; key-ratio panel of built-in scripts (v0.7) loads by HTMX after first paint: binding from the cached concept-fact file + evaluation ≤ 150 ms p95 warm, memoised (08 §6.2); portfolio page: ≤ 50 positions × latest price ≤ 200 ms. Pages are server-rendered with deferred HTMX loads for heavy panels (notes, revisions). Measured by the NFR suite (04 §6).
 
 ## 13. Configuration, secrets, flags
 
@@ -289,3 +326,7 @@ Company page: catalog lookup + one company file + std read model → server time
 - **G-23** Money in Billing: integer EUR micros, never floats; every ledger change via `Metering`/`Billing` commands in a UoW; no `UPDATE`/`DELETE` on `bl_ledger_entry`; credit granted only from verified idempotent provider events; no card data stored (hosted checkout).
 - **G-24** No LLM call without a prior successful reservation (BR-17); `LlmClient` adapters are only invoked from the metered builder use case (import-linter contract).
 - **G-25** The tool runner image contains no DB driver, cloud SDK or secrets; it reads only the snapshot URL passed per request (NFR-09).
+- **G-27** Scripts are pure: no code under `tools/scripts`, `tools/expr` or a built-in script reads data, files, network, environment or the clock (import-linter forbids I/O modules; the as-of date is an input) (BR-20).
+- **G-28** Storage tags (`us-gaap:`, `ifrs-full:`, `dei:`, MDRM codes) appear only in Reconciliation MappingSets and the collector; script specs, the vocabulary API and Tools code use concept names only (BR-21).
+- **G-29** A published script version (user or built-in) never changes: no UPDATE path, DB trigger, built-in specs loaded by content hash with golden fixtures per version; any change is a new version (BR-22).
+- **G-30** The script kernel never raises across its boundary and never returns NaN, infinity or `None` with status `ok`; every new function or undefined rule has unit tests for the ok, undefined and missing paths (BR-25).

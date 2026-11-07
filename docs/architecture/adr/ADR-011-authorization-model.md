@@ -20,6 +20,8 @@ v0.4 additions:
 - **BR-18:** a post's visibility *is* its space; there is no separate visibility field. Posts in the public space are readable by anyone, **including anonymous visitors** (an `anonymous` principal with read-only access to public-space posts and their comments). Posts in a club space are readable only by that club's members.
 - **BR-08 (v0.3):** the super admin may `TransferOwnership` to any other member. They may not `Leave` without a prior transfer or `DeleteClub`. `DeleteAccount` is refused while the account owns any club for which no transfer-or-delete choice has been made (06 §2.2, §4.2).
 
+v0.7: **scripts** and **script runs** are items like tools. A script has `read`/`run`/`copy` on share; pinning another user's script requires `copy` (ADR-024). A script-run embed in a post shows the frozen result and input trace; the formula is shown only if the viewer may read the script (Q-17).
+
 ## Consequences
 + simple mental model matching the requirements; one place to test (generated authorization matrix).
 + copy semantics (BR-07 A-R9, BR-10, BR-11) fall out naturally (new item in target space with provenance).

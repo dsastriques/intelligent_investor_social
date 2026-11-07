@@ -1,6 +1,6 @@
 # 01 — Domain model
 
-Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.2: adds BC-11 Billing & Entitlements for BR-17/FR-29; storage names follow ADR-007: Postgres schemas `app` and `market`). Invariants link to BR ids. Terms in **bold** are the ubiquitous language; code, tables and UI use these names (guideline G-05).
+Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.7: scripts, concept vocabulary and binder, BR-20..25/FR-31..34, see 08; v0.2: adds BC-11 Billing & Entitlements for BR-17/FR-29; storage names follow ADR-007: Postgres schemas `app` and `market`). Invariants link to BR ids. Terms in **bold** are the ubiquitous language; code, tables and UI use these names (guideline G-05).
 
 ## 1. Ubiquitous language
 
@@ -17,7 +17,7 @@ Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.2: adds BC-11 Bil
 | **As-reported** | Exactly as the filer reported it (BR-02). Opposite: **standardized** |
 | **Restatement** | A later filing reports a different value for the same company/tag/period/segment (FR-06) |
 | **Collector** | Job that gathers data from one **source** (SEC bulk, SEC per-filing, FFIEC) |
-| **Watcher** | Long-running collector instance that detects new filings for one **sector** (BR-15) |
+| **Filing watcher** | Long-running collector instance that detects new filings for one **sector** (BR-15, FR-03). Always qualified as "filing watcher" in docs, code and UI (v0.7). The owner's future analysis concept is proposed to be called **monitor** (08 §10) |
 | **Collector run** | One execution of a collector with start/end, status, counts, cursor (BR-05, FR-07) |
 | **Provisional filing** | Loaded from per-filing XBRL before the bulk data set includes it; superseded later |
 | **Standardized financials** | Per company/fiscal year values of the screener's fields (`AnnualFinancials`), derived with a **mapping** and **lineage** |
@@ -43,6 +43,18 @@ Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.2: adds BC-11 Bil
 | **Reservation** | Credit held for one LLM call before it runs (worst-case cost); later **settled** with actual usage or **released** |
 | **Usage record** | Metered LLM call: tokens by type, model, price-table version, cost and charged amount, linked to a **builder session** and tool |
 | **Price table** | Versioned per-model token prices + margin used to compute charges (FR-29) |
+| **Script** | A named, versioned, pure calculation over typed inputs returning typed outputs and a status (BR-20, FR-31). **Built-in** (platform, may be Python) or **user** (formula) |
+| **Script version** | Immutable published revision of a script, identified by `slug@n` and a content hash (BR-22) |
+| **Formula** | The expression of a user script over its declared inputs and pinned dependencies (FR-33) |
+| **Pin** | A reference from one script version to an exact version of another (`uses`) (BR-22) |
+| **Closure** | A script version plus all its transitively pinned versions, vendored with the version (ADR-024) |
+| **Concept** | A named financial or market quantity in the **concept vocabulary** (e.g. `total_debt`, `diluted_eps`, `price`), never a storage tag (BR-21) |
+| **Basis** | Which value of a concept an input means for an as-of date: `at_date`, `latest`, `fy`, `fq`, `ttm`, or a series of these (BR-23) |
+| **As-of date / as-known** | The date a script is evaluated for; **as-known** = only filings accepted by that date count (BR-03, FR-34) |
+| **Binder** | Reconciliation service that resolves a script's inputs for a company and as-of date and normalises units, scale, splits and currency (BR-21, BR-24) |
+| **Evaluation currency** | The single currency all money inputs of one run are bound in (BR-24) |
+| **Script result** | Status `ok` / `undefined` (+ reason) / `missing_input` (+ parameters), outputs and **trace** (BR-25, FR-34) |
+| **Script run** | Immutable record of one evaluation for a company and date, with its trace; citable in posts (FR-34) |
 
 ## 2. Subdomains
 
@@ -66,8 +78,8 @@ Strategic and tactical DDD for Intelligent Investor Pro V1 (v0.2: adds BC-11 Bil
 |---|---|---|---|
 | BC-1 | **Filings** (collector, repo `financial-data-collector`) | Collect, store as-reported, detect restatements, run history | as-reported store (catalog + per-company files), raw archive |
 | BC-2 | **Market Data** | Companies/instruments registry for the app, prices, FX, sector map, filing feed into the app | `market` schema: instruments, prices_daily, fx_rates |
-| BC-3 | **Reconciliation** | Map as-reported facts → standardized financials with lineage | `market` schema: std_financials, std_lineage, mapping sets |
-| BC-4 | **Tools** | Built-in and user tools, tool versions, builder sessions, runs, sandbox | `app` schema: tools, tool_versions, builder_sessions, tool_runs |
+| BC-3 | **Reconciliation** | Map as-reported facts → standardized financials with lineage; **concept vocabulary** and point-in-time **binder** for script inputs (v0.7) | `market` schema: std_financials, std_lineage, mapping sets, company_std_version; published per-company concept-fact files |
+| BC-4 | **Tools** | Built-in and user tools and **scripts**, their versions, builder sessions, runs, sandbox | `app` schema: tools, tool_versions, scripts, script_versions, builder_sessions, tool_runs, script_runs |
 | BC-5 | **Portfolio & Plans** | Portfolios, changes with reasons, investment plans, reviews | `app` schema |
 | BC-6 | **Watchlists & Alerts** | Watchlists, entries, alert rules, alert evaluation | `app` schema |
 | BC-7 | **Social** | Shares, posts, comments, reports/moderation, profiles' public face | `app` schema |
@@ -99,7 +111,7 @@ flowchart LR
   F -->|Published Language: store schema v1, Open Host: catalog| MD
   F -->|Published Language| R
   PV -->|ACL: PriceProvider adapter| MD
-  R -->|Customer/Supplier: AnnualFinancials| T
+  R -->|Customer/Supplier: AnnualFinancials, BindScriptInputs| T
   SCR -->|Conformist library, wrapped by ACL| T
   MD -->|Customer/Supplier: prices, filings events| W
   MD --> P
@@ -128,7 +140,7 @@ flowchart LR
 Relationships:
 - **Filings → others: Published Language + Open Host.** The as-reported store schema (versioned, `store_schema_version` in catalog) and the `filing_event` table in the catalog are the only interface. The app never writes to the store.
 - **SEC/FFIEC → Filings: Conformist** to SEC's FSDS model (we keep their columns, BR-02); FFIEC call reports are translated by an ACL into the same output contract (FR-04, BR-16).
-- **Reconciliation: ACL** between the as-reported model and the screener's `AnnualFinancials`.
+- **Reconciliation: ACL** between the as-reported model and the screener's `AnnualFinancials`, and (v0.7) between the as-reported model and the **concept vocabulary** used by scripts. Tools asks for bound inputs through the `BindScriptInputs` facade (Customer/Supplier) and never reads tags.
 - **Screener core: Conformist** (we use its models and functions unchanged), wrapped by a Tools-side adapter.
 - **Clubs → Portfolio: Customer/Supplier** through an application service (`MarkAsBought`), not by touching Portfolio tables.
 - **Tools → Billing: Customer/Supplier** via the `Entitlements`/`Metering` facade (ADR-020). Tools never reads ledger tables; Billing never sees conversation content (only session/tool ids and token counts).
@@ -173,6 +185,33 @@ Detail and schema in `05-data-collector.md`.
   - ↻ If ToolSpec output is `watchlist` → Watchlists applies `ApplyToolResult` (FR-12).
 - **BuilderSession**: owner principal, target space, messages, proposed spec drafts, validation outcomes, tokens used, charged total (from Billing). ⚑ Only a spec that validates and passes a dry run can be saved as a version (FR-11). ⚑ **BR-17**: a session can be started and each LLM call made only after `Entitlements.can_use(principal, tool_builder)` and a successful `Metering.reserve`; running tools has no such check. A builder session in a club space is billed to the acting admin's own account (A-25).
 - **Built-in tools** are `Tool`s of kind `builtin` owned by the platform space, implemented by adapters around screener functions (`02-implementation.md` §9).
+- **BuilderSession** (v0.7) has `artefact ∈ {tool, script}`; the same premium gate and metering apply (BR-17, FR-33).
+
+#### 5.3a Scripts (v0.7, BR-20..25, FR-31..34, 08)
+- **Script** (root): owner *SpaceId*, slug (unique in space), kind (`builtin` | `user`), description, *Provenance(copied_from script/version)*, latest version number.
+  - **ScriptVersion** (immutable entity): number, *ScriptSpec* (inputs, uses, outputs, undefined_when, formula **or** built-in implementation ref), author, *ContentHash*, *Closure* (vendored pinned specs + hashes), builder_session_id, created_at.
+  - *InputDecl*: name, (*ConceptRef*(concept, basis, series length) | parameter), *ValueType* (money, per_share_money, share_count, ratio, number), currency variable/ISO, default, optional.
+  - *OutputDecl*: name, *ValueType*. *UndefinedRule*: condition, reason. *Pin*: alias, script ref, version.
+  - ⚑ **BR-20** a spec has no construct for data access, storage, dates, clock or network; a user script is a formula only (ADR-022).
+  - ⚑ **BR-21** every non-parameter input names a concept of the vocabulary; storage tags are rejected.
+  - ⚑ **BR-22** a published version is immutable; every pin is an exact published version; the closure is acyclic (depth ≤ 8, size ≤ 32); a new version never changes a dependent (vendored closure).
+  - ⚑ **BR-23** a series input declares its basis and length.
+  - ⚑ **BR-24** inputs and outputs are typed; formulas type-check dimensionally; money inputs share one currency variable unless fixed.
+  - ⚑ **FR-33** pinning another space's script requires `copy` permission (A-50); copies are new Scripts with provenance (BR-07).
+  - ▶ `PublishScriptVersion` (from a validated draft), `CopyScript`, `ImportScriptToClub`, `RunScript`. ⇒ `ScriptVersionPublished`.
+- **ScriptRun** (root, immutable): caller principal, caller space, script ref + content hash, company_id, as_of, basis (`as_known` | `latest`), evaluation currency, *ScriptResult* (status, outputs, reason, missing, *Trace*), data versions, engine version, created_at.
+  - ⚑ **BR-25** status ∈ {`ok`, `undefined` + reason, `missing_input` + parameters}; `ok` only with finite values for every output; never an exception.
+  - ⇒ `ScriptRunCompleted`. Cited runs are retained while cited (A-51).
+- **Script kernel** (domain service, pure): `evaluate(closure, bound_inputs) → ScriptResult`. Built-in closures run in-process; closures with user scripts run in the sandboxed runner (NFR-09).
+
+#### 5.3b Binder (BC-3 Reconciliation, v0.7, ADR-023)
+- **ConceptVocabulary** (versioned config): concept → type, nature (flow/stock/market/meta), allowed bases, aliases, description.
+- **ConceptFact** (per company, every vintage): concept, period (instant/duration, fiscal period), value, uom, currency, filing_key, accepted_at, mapping version, rule, source tags.
+- **InputBinder** (domain service): `bind(requirements, facts, market, as_of, basis, currency) → Bindings | Missing[]`.
+  - ⚑ **BR-03** `as_known`: only facts with `accepted_at ≤ as_of`; latest-accepted vintage wins; prior values kept and flagged `restated`.
+  - ⚑ **BR-23** a series is contiguous and of the declared length, else `missing` with the gap; TTM = 4 discrete quarters newer than the last FY, else FY.
+  - ⚑ **BR-24** one evaluation currency per run; every converted value records rate/date/source; minor units and scale normalised; per-share and share counts split-adjusted to as_of.
+  - ⚑ **BR-21/G-13** the binder never computes analytics (ratios, averages, market cap) and never modifies as-reported data.
 
 ### 5.4 BC-5 Portfolio & Plans
 
@@ -182,7 +221,7 @@ Detail and schema in `05-data-collector.md`.
   - ⚑ **BR-01**: every change has a non-empty reason; otherwise `ReasonRequired` error. Enforced in the aggregate and by DB `CHECK(length(trim(reason)) > 0)`.
   - ⚑ Cannot remove more shares than held.
   - ⇒ `PositionChanged`.
-- **InvestmentPlan** (root): scope (`portfolio:<id>` | `company:<company_id>` within a portfolio or space), horizon (start, end), thesis, review date, list of *Expectation(metric, comparator, target, unit, evaluation)* where metric is either machine-measurable (`price`, `portfolio_return`, `std:<field>` e.g. revenue, EPS) or `manual` with a description.
+- **InvestmentPlan** (root): scope (`portfolio:<id>` | `company:<company_id>` within a portfolio or space), horizon (start, end), thesis, review date, list of *Expectation(metric, comparator, target, unit, evaluation)* where metric is either machine-measurable (`price`, `portfolio_return`, `std:<field>` e.g. revenue, EPS) or `manual` with a description; v0.7 adds `script:<ref>@<version>/<output>`, evaluated as of the evaluation date with basis as-known (08 §6.3).
   - ⚑ **BR-12**: at least one expectation; horizon end > start; each expectation has a target and comparator.
   - ⚑ Plan text editable until the horizon ends; after a review the reviewed version is frozen (new versions allowed).
   - ↻ At `review_date` the worker opens a **PlanReview** (FR-15).
@@ -269,10 +308,12 @@ Detail and schema in `05-data-collector.md`.
 | FilingCollected | Filings (catalog `filing_event`) | Market Data (company/filing index), Reconciliation (recompute), Alerts (new_filing) |
 | RestatementDetected | Filings | Alerts (restatement), company page badge |
 | PricesRefreshed | Market Data | Alerts, Tools (cache invalidation) |
-| StandardizedFinancialsUpdated | Reconciliation | Tools (cache), Alerts (value_signal) |
+| StandardizedFinancialsUpdated | Reconciliation | Tools (cache; binding memo key changes via `std_seq`), Alerts (value_signal) |
 | PositionChanged | Portfolio | Social (shared portfolio views), analytics |
 | PlanReviewDue / PlanReviewed | Portfolio & Plans | Notifications |
 | ToolRunCompleted | Tools | Watchlists (FR-12), Notifications |
+| ScriptVersionPublished | Tools | catalogue read model, "newer version available" hints |
+| ScriptRunCompleted | Tools | Plan reviews (evidence, FR-15), later monitors/dashboards |
 | AlertTriggered | Alerts | Notifications |
 | CommentAdded, PostPublished | Social | Notifications |
 | MemberJoined/Ejected, AdminGranted/Revoked, Invited, OwnershipTransferred, ClubDeleted | Clubs | Notifications, Identity (policy cache), Social (club posts removed on ClubDeleted) |

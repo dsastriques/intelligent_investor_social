@@ -19,6 +19,8 @@ In v0.2 the collector and the as-reported store of record (catalog + per-company
 ## Decision
 Option 3. Published keys are content-addressed and never overwritten. Old versions are kept 30 days (lifecycle rule), so a page or run can always finish on the version it started with. `store_schema_version` stays the published-language contract (contract tests, 04 §5).
 
+v0.7 (ADR-023): `iip reconcile` also publishes per-company **concept-fact files** (`std/<company_id>/<content-hash>.sqlite`, every vintage) with the same immutable-key scheme. `market.company_std_version` points at the current one; the `FilingStore`-style cache serves them to the script binder.
+
 ## Consequences
 + The serving plane does not depend on the batch box being up: the last published state keeps serving, and NFR-04 tolerates a delay of up to 24 h.
 + The per-company SQLite format is unchanged, so FR-05 export bundles and dev seeds work as in v0.1.

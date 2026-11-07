@@ -4,7 +4,7 @@
 
 | Level | Scope | Tooling | Runs |
 |---|---|---|---|
-| Unit | domain aggregates/value objects, application use cases with fake ports, DSL parser/evaluator, policies, collector record parsing, restatement logic, reconciliation mapping | pytest, hypothesis (DSL, restatement tolerances) | every commit |
+| Unit | domain aggregates/value objects, application use cases with fake ports, DSL parser/evaluator, script kernel/type checker/closure resolver, binder rules (v0.7), policies, collector record parsing, restatement logic, reconciliation mapping | pytest, hypothesis (DSL, restatement tolerances) | every commit |
 | Integration | SQLAlchemy repositories on real Postgres (CI service container / testcontainers), Alembic up/down, outbox relay, job queue (`SKIP LOCKED`), billing ledger/reservations under concurrency, webhook inbox, collector loaders on fixture zips, store_client + snapshot reader, tool-runner over HTTP | pytest + Postgres + tmp SQLite store files | every PR |
 | Contract | (a) store schema v1: app's `FilingStore` adapter vs `fdc` published `store_client` + schema version (pinned tag); (b) tool-runner request/response JSON schema; (c) `PriceProvider` adapters (Yahoo V1; marketstack/Tiingo replacement) vs recorded vendor fixtures, all against one port contract suite; (e) `StripePaymentGateway` vs recorded Stripe webhook payloads + `Stripe-Signature` fixtures; (d) screener-core wrapper vs pinned screener version (golden outputs) | pytest, JSON Schema | every PR |
 | E2E | user journeys UC-01..UC-13 in a browser against app on seed bundle | Playwright (Python) | every PR (smoke subset) + nightly full |
@@ -69,6 +69,18 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | BR-17 | unit | `tests/unit/tools/test_builder_session.py::test_session_start_requires_entitlement`, `::test_llm_not_called_when_reservation_fails`, `tests/unit/tools/test_run_tool.py::test_running_tools_not_gated_by_billing` | planned |
 | BR-17 | integration | `tests/integration/billing/test_concurrency.py::test_parallel_reservations_cannot_overspend`, `tests/integration/billing/test_webhooks.py::test_top_up_granted_once_per_event`, `::test_invalid_signature_rejected`, `::test_return_url_grants_nothing` | planned |
 | BR-17 | e2e | `tests/e2e/test_premium.py::test_no_credit_blocks_builder_but_runs_tools`, `::test_top_up_then_build_and_see_usage` | planned |
+| BR-20 | unit (architecture) | `tests/unit/test_architecture.py::test_scripts_and_expr_import_no_io_modules` (no `os`, `socket`, `datetime.now`, DB, HTTP), `tests/unit/tools/scripts/test_spec.py::test_spec_has_no_data_access_constructs`, `::test_as_of_only_via_binding` | planned |
+| BR-20 | unit | `tests/unit/tools/scripts/test_kernel.py::test_same_inputs_same_outputs_property` (hypothesis), `::test_same_script_evaluates_for_any_past_date` | planned |
+| BR-21 | unit | `tests/unit/tools/scripts/test_validate.py::test_storage_tag_rejected`, `::test_unknown_concept_rejected`, `::test_alias_diluted_eps_ttm_resolves`; `tests/unit/test_architecture.py::test_no_storage_tags_outside_reconciliation_mappings` | planned |
+| BR-21 | integration | `tests/integration/reconciliation/test_binder.py::test_binds_concepts_from_concept_facts_for_company_and_date`, `::test_total_debt_derived_from_components_with_lineage` | planned |
+| BR-22 | unit | `tests/unit/tools/scripts/test_versions.py::test_published_version_immutable`, `::test_pin_must_be_exact_published_version`, `::test_cycle_rejected`, `::test_depth_and_size_limits`, `::test_new_dependency_version_does_not_change_dependent`, `::test_inputs_unified_by_concept`, `::test_conflicting_input_declarations_rejected` | planned |
+| BR-22 | integration | `tests/integration/tools/test_script_repo.py::test_db_trigger_rejects_version_update`, `::test_dependent_survives_source_unshare_and_delete`, `::test_rerun_from_trace_byte_identical` | planned |
+| BR-22 | contract | `tests/contract/test_builtin_scripts_frozen.py::test_builtin_version_hash_and_golden_unchanged` | planned |
+| BR-23 | unit | `tests/unit/reconciliation/test_binding.py::test_series_length_and_order_oldest_first`, `::test_short_series_missing_input_with_gap`, `::test_ttm_four_discrete_quarters`, `::test_ttm_falls_back_to_fy`, `::test_q4_derived_from_fy_minus_9m`, `::test_ytd_differencing` | planned |
+| BR-24 | unit | `tests/unit/tools/expr/test_types.py::test_dimensional_algebra`, `::test_money_plus_shares_rejected`, `tests/unit/tools/scripts/test_kernel.py::test_mixed_currencies_undefined_not_converted`; `tests/unit/reconciliation/test_binding.py::test_single_evaluation_currency_with_fx_trace`, `::test_minor_units_and_scale_normalised`, `::test_split_adjusted_per_share` | planned |
+| BR-25 | unit | `tests/unit/tools/scripts/test_kernel.py::test_status_ok_undefined_missing`, `::test_division_by_zero_undefined`, `::test_undefined_rule_reason`, `::test_undefined_propagates_with_alias`, `::test_all_missing_parameters_listed`, `::test_internal_error_becomes_undefined`, `::test_never_nan_inf_or_null_ok` (hypothesis) | planned |
+| BR-25 | NFR | `tests/nfr/test_script_sandbox.py::test_fuzzed_formulas_never_crash_or_exceed_limits` | planned |
+| BR-03 (scripts) | unit | `tests/unit/reconciliation/test_binding.py::test_as_known_ignores_later_amendment`, `::test_restated_value_flagged_with_prior`, `::test_latest_basis_uses_amendment` | planned |
 
 ### FR/NFR acceptance tests (selection)
 
@@ -86,6 +98,11 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 | FR-17/18 | `tests/integration/alerts/test_alerts.py::test_price_move_fires_once_per_state_change`, `::test_email_and_inapp_delivered_idempotently` |
 | FR-27 | `tests/integration/identity/test_gdpr.py::test_export_contains_all_contexts`, `::test_delete_saga_removes_personal_data_resumable`, `::test_billing_records_pseudonymised_not_deleted`, `tests/unit/identity/test_delete_account.py::test_refused_until_decision_for_each_owned_club`, `::test_decisions_executed_first_in_saga`; `tests/integration/identity/test_magic_link.py::test_single_use_and_expiry`, `::test_unverified_email_cannot_sign_in` |
 | FR-30 | unit `tests/unit/social/test_content_purge.py::test_requires_valid_confirmation_token`, `::test_rejected_without_recent_reauth`, `::test_only_author_can_purge_own_content`, `::test_one_active_purge_per_account`; integration `tests/integration/social/test_content_purge.py::test_deletes_all_posts_and_comments_public_and_every_club`, `::test_includes_clubs_user_has_left`, `::test_club_documents_untouched`, `::test_private_items_kept_shares_revoked`, `::test_others_replies_kept_under_post_deleted_placeholder`, `::test_account_and_private_space_intact`, `::test_idempotent_rerun_deletes_nothing`, `::test_resumes_after_crash_mid_batch`, `::test_content_created_after_cutoff_is_kept` (concurrent posting during job), `::test_account_deletion_waits_for_running_purge`, `::test_notifications_for_deleted_content_removed`; e2e `tests/e2e/test_settings.py::test_delete_all_my_content_confirmation_text_and_result` |
+| FR-31 | `tests/unit/tools/scripts/test_spec.py::test_schema_requires_contract_fields` (name, version, description, author, typed inputs with concept/type/unit/default/series, typed outputs, calculation, undefined rules) |
+| FR-32 | `tests/contract/test_builtin_scripts_parity.py::test_catalogue_matches_screener_golden` (per seed company, rel tol 1e-9), `tests/e2e/test_scripts.py::test_worked_examples_ev_debt_to_ev_pe` (fixture "Example Corp": EV 58 bn, Debt/EV 20.7 %, P/E 21.01; restated P/E 21.28; negative earnings undefined; missing quarters) |
+| FR-33 | `tests/integration/tools/test_script_builder.py::test_fake_llm_script_validated_dry_run_published`, `::test_repair_loop_on_type_error`, `::test_builder_requires_entitlement_and_reservation`, `tests/unit/tools/test_run_script.py::test_running_scripts_not_gated_by_billing`, `tests/unit/shared/test_authz_matrix.py::test_script_share_run_copy_pin` |
+| FR-34 | `tests/integration/tools/test_script_run.py::test_run_as_of_date_default_today`, `::test_trace_has_values_periods_filings_fx`, `::test_missing_input_short_circuits_runner`, `::test_user_closure_runs_in_runner_builtin_in_process`, `::test_memo_hit_same_key`; `tests/e2e/test_scripts.py::test_cite_script_run_in_post` |
+| FR-15 (scripts) | `tests/integration/portfolio/test_plan_review.py::test_script_metric_expectation_evaluated_as_of_review_date` |
 | FR-29 | `tests/integration/billing/test_metering.py::test_usage_record_per_call_with_price_table_version`, `::test_charge_uses_vendor_reported_tokens_and_margin`, `::test_expired_reservations_released`; `tests/unit/billing/test_price_table.py` |
 | NFR-11 (owner decision: Yahoo V1) | `tests/integration/market/test_prices.py::test_every_price_row_has_source`, `::test_stale_price_flagged_and_alert_suppressed`; `tests/unit/test_architecture.py::test_yfinance_imported_only_by_yahoo_adapter`; e2e `test_price_attribution_visible` |
 
@@ -95,9 +112,9 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 - Screener core: golden files produced by the pinned screener version for the seed companies; upgrade of the pin regenerates them in a reviewed PR.
 
 ## 6. NFR tests
-- **Performance (NFR-03):** locust scenario (company page, portfolio page, statements API) on staging with full store: p95 < 2 s at 50 req/s; server-timing budget 300 ms.
+- **Performance (NFR-03):** locust scenario (company page incl. key-ratio script panel, script run page, portfolio page, statements API) on staging with full store: p95 < 2 s at 50 req/s; server-timing budget 300 ms.
 - **Load/scale (NFR-01):** synthetic 10k users / 30k portfolios / 300k changes in schema `app`; run alert evaluation and page tests; record DB CPU, connection use and slow queries (sizing input for the DB node, ADR-007).
-- **Sandbox (NFR-09):** DSL fuzzing (hypothesis) – no crash/timeout beyond limits; runner image contains no DB driver/SDK/secrets (image inspection test, G-25); runner endpoint rejects calls without the worker token; memory bomb spec rejected by cost estimate; container limits enforced (timeout test).
+- **Sandbox (NFR-09):** DSL and **script formula** fuzzing (hypothesis) – no crash/timeout beyond limits; deep nesting, huge exponents and 100k-step formulas end `undefined` within the runner budget; closure hash mismatch refused; runner image contains no DB driver/SDK/secrets (image inspection test, G-25); runner endpoint rejects calls without the worker token; memory bomb spec rejected by cost estimate; container limits enforced (timeout test).
 - **Security:** OWASP ZAP baseline against staging; authZ matrix; pip-audit; CSRF/XSS tests for Markdown posts.
 - **Resilience:** kill worker mid-job → job retried, no duplicate email; kill backfill mid-quarter → rerun completes with no duplicates (BR-05).
 - **Collector memory (NFR-02):** M0 measurement and a regression test that streams a 200 MB synthetic data set with RSS < 512 MB (nightly, `-m slow`).
@@ -106,7 +123,7 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 - **Billing (FR-29):** monthly reconciliation RB-09 (usage records vs LLM invoice ≤ 1 % gap).
 
 ## 7. Regression suite
-`-m regression` marks: BR matrix tests, authZ matrix, golden screener outputs, e2e smoke per UC. Command in §3. Must be green before every merge to main and every release tag.
+`-m regression` marks: BR matrix tests, authZ matrix, golden screener outputs, built-in script parity and frozen-version tests, e2e smoke per UC. Command in §3. Must be green before every merge to main and every release tag.
 
 ## 8. Quality gates
 - Required CI checks green (lint, types, import contracts, unit, integration, contract, smoke e2e, pip-audit).
@@ -119,7 +136,7 @@ Status: all **planned** (no code yet). Test locations are the agreed names the d
 2. Build the seed bundle (with collector M1) and fixture prices; factories for users/clubs/portfolios.
 3. Implement the generated authorization matrix test from 06 §2.
 4. Playwright harness with `dev-up` fixture, fakes for LLM/email/prices, trace artefacts in CI.
-5. Golden-output contract tests for built-in tools against the pinned screener core.
+5. Golden-output contract tests for built-in tools **and built-in scripts** against the pinned screener core; "Example Corp" fictional fixture (concept facts + prices) for the worked examples (08 §9).
 6. NFR suites: locust scenario, 10k synthetic data generator, sandbox fuzz and isolation tests, ZAP baseline job.
 6a. Billing: fake `PaymentGateway` + fake LLM with fixed usage; concurrency tests for reservations; recorded webhook fixtures per chosen provider.
 7. Wire `regression` command and CI required checks; update §4 statuses as tests land.

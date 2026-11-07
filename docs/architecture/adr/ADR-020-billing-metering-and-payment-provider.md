@@ -44,6 +44,7 @@
    - **Alternative kept:** Paddle (MoR, ≈ 5 % + $0.50; it is the seller and handles VAT). It is the fallback if handling VAT/OSS in-house proves too heavy. Only the adapter changes.
 6. **Credits are restricted:** usable only for the platform's own builder tokens; not transferable, not withdrawable, refundable only through provider refunds within the withdrawal period; an optional expiry of 12 months (config, owner decision). This keeps credits a prepayment for our service rather than stored value. **Legal check advised** (R-15).
 7. **Free paths stay free:** `RunTool` (built-in, own, shared or club tools) has **no** entitlement check, only the existing run quotas (06 §3.6). A club admin who builds a tool in the club space with the builder pays from their **own** account (ASSUMPTION A-25).
+   v0.7 (FR-33): conversational **script** building uses the same entitlement and metering path (`UsageRecord.artefact_ref = script:<id>`). Running scripts is free, with a run quota only. No ledger, price-table or provider change.
 8. **GDPR and retention:** the provider is listed as a sub-processor. The ledger, usage records and invoices referenced by provider id are kept for the statutory bookkeeping period (NL: 7 years, **to be confirmed by the accountant**, A-27) after account deletion, pseudonymised (account id → hashed reference, no conversation content). The deletion saga (06 §4.2) gets a Billing step that pseudonymises rather than deletes. Unused credit at deletion: refund policy per Q-14.
 
 ## Consequences

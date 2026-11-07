@@ -23,6 +23,7 @@ Option 1 behind the `LlmClient` port: **Anthropic Claude**. The default model is
 4. **Cost hygiene that also lowers user prices:** prompt caching of the static system prompt (DSL grammar and identifier catalogue), the small model by default, at most 3 repairs (each one metered), and a dry run in the sandbox (not metered: it is a tool run, not LLM).
 5. **Safety limits** (config, not budget): a per-user daily token ceiling, a global hourly token-rate alarm, and the `llm_kill_switch` flag.
 6. Only the user's own conversation and the public identifier catalogue go to the vendor. A DPA and zero/short retention settings are part of Q-05.
+7. **v0.7 (FR-33):** the same builder serves **scripts** (`BuilderSession.artefact = script`, structured output = ScriptSpec JSON Schema; the cached system prompt adds the concept vocabulary, function list and built-in catalogue). Premium gating and reserve/call/settle metering are identical. `UsageRecord.tool_id` is generalised to `artefact_ref`. Running scripts is free, like running tools.
 
 Indicative cost per builder message (ASSUMPTION A-24, to be measured in M5): ≈ 10k input tokens (≈ 8k cached) + ≈ 2k output, so about $0.01–0.02 per call with Haiku 4.5 prices, ≤ $0.06 with 3 repairs. A 15-message session costs about $0.2–0.9 before margin.
 

@@ -181,7 +181,9 @@ sequenceDiagram
 4. **SEC fair access:** all `fdc` processes acquire tokens from a **host-wide token bucket** (file-locked state under `/run/fdc/`), default **8 req/s** (headroom under 10). `EDGAR_USER_AGENT` is mandatory (process refuses to start without it). 403/429 → exponential backoff and a run note. Bulk downloads count as one request each.
 5. **Health pings:** systemd units wrap runs in `run-job.sh` (healthchecks.io start/success/fail), the pattern already used by the screener.
 
-## 7. Per-sector watchers and gap fill (FR-03, BR-15, NFR-04, ADR-006)
+## 7. Per-sector filing watchers and gap fill (FR-03, BR-15, NFR-04, ADR-006)
+
+Naming (v0.7): the collector's watchers are always called **filing watchers** in docs, code and UI, so they cannot be confused with the owner's future analysis concept (proposed name **monitor**, 08 §10). Unit names `fdc-watch@<sector>` stay.
 
 - **Sectors:** SIC code → ~11 economic sectors via `config/sectors.yaml` (A-02). Company SIC comes from the data sets / EDGAR submissions.
 - **Discovery (shared, cheap):** `fdc-feed` polls the EDGAR "latest filings" feed for the configured forms every 15 min (configurable) and reads the nightly **daily index** as a reconcile pass, writing candidates to `catalog.filing_inbox` with their sector (one SEC request per poll for all sectors, NFR-07).
