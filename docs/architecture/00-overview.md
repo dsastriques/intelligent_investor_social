@@ -1,6 +1,15 @@
 # 00 — Overview: Intelligent Investor Pro (V1)
 
-Status: **design v0.5 (2026-11-06)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.4**: adds BR-19, NFR-06 standby; v0.3 added BR-18 and changed BR-08, FR-23, FR-27; v0.2 added BR-17/FR-29) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+Status: **design v0.6 (2026-11-07)**, architect design mode. Input: `claude/01-requirements.md` (requirements **v0.5**: adds FR-30, extends BR-19; v0.4 added BR-19, NFR-06 standby; v0.3 added BR-18 and changed BR-08, FR-23, FR-27; v0.2 added BR-17/FR-29) and `claude/02-architect-brief-system-design.md` (coordinator). Requirements are owned by the coordinator; this document does not add or change any. Anything not stated there is marked **ASSUMPTION** and listed in §6.
+
+## What changed in v0.6
+
+Owner 2026-11-07 (requirements v0.5): **FR-30 "Delete all my content"** on the settings page, available at any time.
+- It permanently deletes all of the user's posts and comments, in the public space and in every club, after an explicit confirmation.
+- The account and private space are untouched.
+- BR-19 anonymisation applies only to what remains. This is now the main mitigation for R-17.
+- Design: the `DeleteAllMyContent` command runs as a background `ContentPurge` job with a cut-off timestamp (01 §5.7, 02 §6, 06 §2/§4.2, 04 tests).
+- Coordinator assumptions are listed as A-38..A-41.
 
 ## What changed in v0.5
 
@@ -185,7 +194,8 @@ Every BR/FR/NFR maps to design elements (doc §) and ADRs. Tests per BR: `04-tes
 | BR-14 | Confirmed by owner 2026-11-06. No order/broker adapters; G-20 forbids moving investment money; the only payment integration is BC-11 for platform fees (FR-29); credits non-transferable, non-withdrawable; disclaimer in UI | 02 §16; ADR-001, ADR-020 |
 | BR-15 | One watcher instance per sector (`fdc-watch@<sector>`); SIC→sector map | 05 §7; ADR-006 |
 | BR-16 | `SourceCollector` plug-ins; FFIEC call report collector; every row carries `source` | 05 §8; ADR-002 |
-| BR-19 | Deletion saga Social step **anonymises** instead of deleting: posts/comments keep space, body, timestamps; `author_id` replaced by the platform's single `deleted_user` principal (no per-user pseudonym, no mapping kept); author profile link removed; embeds of the deleted user's private items render as placeholders (items deleted); private-space items deleted (FR-27) | 01 §5.7; 06 §4.2; 04 §4 |
+| BR-19 | Deletion saga Social step **anonymises** instead of deleting: applies only to content not removed earlier with FR-30; posts/comments keep space, body, timestamps; `author_id` replaced by the platform's single `deleted_user` principal (no per-user pseudonym, no mapping kept); author profile link removed; embeds of the deleted user's private items render as placeholders (items deleted); private-space items deleted (FR-27) | 01 §5.7; 06 §4.2; 04 §4 |
+| FR-30 | `Social.DeleteAllMyContent(confirmation)` → `ContentPurge` job: hard-deletes every post/comment authored by the user up to a cut-off timestamp across the public space and all clubs (incl. clubs left), revokes shares of private items (items kept), leaves account/private space untouched; replies by others under deleted posts shown under a "post deleted" placeholder; idempotent, resumable | 01 §5.7; 02 §6; 06 §2.2, §4.2; 04 §4 |
 | BR-18 | Post belongs to exactly one space (`public` or `club:<id>`); policy: public-space posts + comments readable by any principal incl. `anonymous` visitor; club-space posts only by members; no per-post visibility field; embeds still checked per viewer | 01 §5.7; 06 §2.2; ADR-011 |
 | BR-17 | Builder sessions and every LLM call gated by `Entitlements.can_use` + credit `Reservation` (invariant: available ≥ 0); `RunTool` has no billing check; club builds billed to acting admin (A-25) | 01 §5.3, §5.9; 06 §3.5; ADR-010, ADR-020; G-24 |
 
@@ -285,6 +295,12 @@ Added by the architect:
 | A-35 | (superseded v0.5 by BR-19: posts and comments of deleted users are kept and anonymised) | 06 §4.2 |
 | A-36 | Anonymisation uses one shared "deleted user" principal for all deleted accounts (no per-user pseudonym), so posts by the same deleted author cannot be linked together | 01 §5.7 |
 | A-37 | Before deleting their account a user can delete individual posts/comments themselves (normal FR-20 delete); the deletion flow reminds them of BR-19 and links to their posts | 06 §4.2 |
+| A-38 | (FR-30, coordinator) "Content" = posts and comments only | 01 §5.7 |
+| A-39 | (FR-30, coordinator) Club documents (plans, analyses, tools) belong to the club and are not deleted | 01 §5.7 |
+| A-40 | (FR-30, coordinator) Items the user shared from the private space are unshared but kept | 01 §5.7 |
+| A-41 | (FR-30, coordinator) Others' replies under a deleted post stay readable under a "post deleted" placeholder | 01 §5.7 |
+| A-42 | (architect) Purge runs as a background job with a cut-off = confirmation time; content created after it is kept; deleted rows are not recoverable from the app, but remain in backups until they age out (35 days), stated in the privacy notice | 06 §4.2 |
+| A-43 | (architect) Posts/comments in clubs the user has since left are included ("all their clubs" read as all content they authored); a club deleted earlier already removed its posts (A-34) | 01 §5.7 |
 
 ## 7. Risks
 
@@ -306,7 +322,7 @@ Added by the architect:
 | R-14 | (reduced v0.5) Node failure covered by the **accepted standby node** (NFR-06). Remaining: logical errors (bad migration, bug, mistaken delete) replicate to the standby; recovery depends on provider PITR (unverified) or nightly dumps | up to 24 h of user records only for logical errors | verify PITR in S-1; nightly encrypted dumps; pre-migration snapshot before every `alembic upgrade`; consider 6-hourly dumps if no PITR |
 | R-15 | Prepaid credits treated as vouchers/e-money or VAT/OSS/consumer-law set-up wrong (owner is seller with Stripe) | legal/tax | restricted credits (platform use only, non-transferable, non-withdrawable); customer country recorded per top-up; optional Stripe Tax; Paddle (MoR) fallback; accountant/legal check before first paid top-up (gate M5b, Q-15) |
 | R-16 | Two cloud providers increase ops surface | ops load | IaC for both, single runbook set, budget alerts on both |
-| R-17 | **GDPR residual (BR-19):** anonymised posts/comments may still identify the author by their content (style, self-references, names, portfolio details) — anonymisation is then incomplete and the text remains personal data | privacy, erasure requests (Art. 17) | privacy notice states BR-19 explicitly before sign-up and in the deletion flow; users can delete individual posts/comments before (or instead of) deleting the account (A-37); the deletion flow lists the user's posts with a "delete all my posts" option **only if the owner approves** (it would change BR-19 to opt-in); operator handles residual Art. 17 requests per post (redact/hide via FR-21 tools) and logs them; legal check advised |
+| R-17 | **GDPR residual (BR-19):** anonymised posts/comments may still identify the author by their content (style, self-references, names, portfolio details) — anonymisation is then incomplete and the text remains personal data | privacy, erasure requests (Art. 17) | **primary mitigation FR-30 "Delete all my content"** (any time, before or instead of account deletion); BR-19 stated in privacy notice, at sign-up and in the deletion flow (which links to FR-30); individual post/comment delete (A-37); operator redaction for residual Art. 17 requests (FR-21 tools, logged); legal check advised |
 
 ## 8. Questions for the owner
 

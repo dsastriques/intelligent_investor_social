@@ -1,6 +1,6 @@
 # 07 — Phased implementation plan
 
-v0.5 (2026-11-06): BR-19 (deleted users' posts kept, anonymised) and the Postgres standby accepted. Q-03c, Q-07, Q-11 and Q-15 are on the owner's Todo list and stay open. v0.4: owner answered Q-05, Q-06, Q-08, Q-09, Q-10 (clubs), Q-12, Q-14b; M0 tracked as GitHub issues #2–#6; M6 includes ownership transfer, club deletion and space-based post visibility. v0.3: owner accepted hosting A, Yahoo prices for V1, Stripe, prepaid top-ups — M3 uses the Yahoo adapter (no licence gate), M5b uses Stripe. v0.2: M0 unchanged; hosting spike S-1 added to M3; M3 prices use marketstack behind the licence gate; billing milestone M5b added; owner questions updated.
+v0.6 (2026-11-07): FR-30 "Delete all my content" in M6, with the BR-19 interplay in M7. v0.5 (2026-11-06): BR-19 (deleted users' posts kept, anonymised) and the Postgres standby accepted. Q-03c, Q-07, Q-11 and Q-15 are on the owner's Todo list and stay open. v0.4: owner answered Q-05, Q-06, Q-08, Q-09, Q-10 (clubs), Q-12, Q-14b; M0 tracked as GitHub issues #2–#6; M6 includes ownership transfer, club deletion and space-based post visibility. v0.3: owner accepted hosting A, Yahoo prices for V1, Stripe, prepaid top-ups — M3 uses the Yahoo adapter (no licence gate), M5b uses Stripe. v0.2: M0 unchanged; hosting spike S-1 added to M3; M3 prices use marketstack behind the licence gate; billing milestone M5b added; owner questions updated.
 
 Milestones are ordered by risk: the data asset first (largest unknowns: size, FSN semantics), then the app skeleton, then features. Each milestone ends with a PR (or PRs) reviewed in architect impl mode. Durations are not estimated here (owner/coordinator plan the calendar).
 
@@ -47,7 +47,7 @@ Built-in tools (screener core wrappers, golden tests), ToolSpec DSL + sandboxed 
 BC-11 per ADR-020: billing account, ledger, reservations, usage records, price table, `StripePaymentGateway` (Checkout + webhooks, test mode first), top-up checkout + webhook inbox, usage page, operator reconciliation view (RB-09), deletion-saga step. **Gate before `billing_live`:** owner's business set-up and VAT/OSS registration done (Q-15), terms of sale + withdrawal-right wording, top-up amounts, 20 % margin and expiry configured (Q-14b, confirmed); recommended (not required): price-vendor switch reviewed (ADR-012 §5). BR-17, FR-29.
 
 ## M6 — Social and clubs
-Sharing, posts/comments in the public space (visitor-readable) and club spaces (members only) per BR-18, moderation; clubs with roles, ownership transfer, club deletion, leave rules, club space, import tool, mark as bought. BR-06..BR-11, BR-18, FR-19..FR-26.
+Sharing, posts/comments in the public space (visitor-readable) and club spaces (members only) per BR-18, moderation, **FR-30 "Delete all my content"** (background purge job); clubs with roles, ownership transfer, club deletion, leave rules, club space, import tool, mark as bought. BR-06..BR-11, BR-18, FR-19..FR-26.
 
 ## M7 — Hardening and beta launch
 GDPR export/delete saga (incl. the transfer-or-delete precondition for owned clubs, FR-27), NFR suites (performance, load, sandbox, ZAP), restore drill, runbooks, privacy notice/terms, beta invitations. NFR-01, NFR-03, NFR-06, NFR-08.

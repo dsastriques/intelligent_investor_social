@@ -71,6 +71,7 @@ Club membership management (domain invariants in `Club`, checked again by policy
 | transfer super-admin ownership to any other member (BR-08, FR-23) | ✓ | ✗ | ✗ |
 | delete club (FR-23) | ✓ | ✗ | ✗ |
 | create post in club space (A-32) | ✓ | ✓ | ✗ |
+| delete all my own posts/comments in the club (FR-30, part of the account-wide purge) | ✓ | ✓ | ✓ |
 | edit club watchlist, plan, analyses, documents, tools; import tool (FR-25) | ✓ | ✓ | ✗ |
 | read all club documents; comment | ✓ | ✓ | ✓ |
 | mark as bought into own portfolio (FR-26) | ✓ | ✓ | ✓ |
@@ -168,12 +169,12 @@ v0.2: LLM cost is paid by users (BR-17), so LLM limits are **safety** limits, no
 ### 4.2 Export and deletion
 - `ExportMyData` → worker builds a ZIP (JSON per context + Markdown of posts/plans) and emails a time-limited download link (or in-app download), within minutes.
 - `DeleteAccount` → account `pending_deletion`, sessions revoked → **deletion saga** job steps, each idempotent and resumable: Portfolio & Plans (delete), Tools (delete private tools; tools copied by others remain theirs), Watchlists & Alerts (delete), Social (delete shares; **BR-19: posts and comments are kept and anonymised**: `author_id` → shared `deleted_user`, profile link removed, no mapping retained, audience unchanged), Clubs (**precondition, FR-27/BR-08:** `DeleteAccount` is refused until the user has chosen *transfer to member X* or *delete club* for every club they own; the UI lists those clubs. The saga's first step executes the choices, then the user leaves all other clubs), Notifications (delete), **Billing (pseudonymise ledger/usage records, keep for the statutory period A-27; release open reservations; unused credit refunded on request within the legal window (ADR-020, Q-14b))**, Identity (delete account row, keep a salted hash of the email for 30 days to prevent abuse re-signup — ASSUMPTION A-19). Backups age out within the retention window (35 days; provider backup retention per S-1), stated in the privacy notice.
-- **BR-19 residual GDPR point (R-17):** an anonymised post can still identify its author through its content, in which case it stays personal data. Mitigations:
-  1. The privacy notice and terms state BR-19, shown at sign-up and again in the deletion flow.
+- **FR-30 "Delete all my content" (any time):** hard-deletes all of the user's posts and comments in the public space and every club (including clubs they left), up to the confirmation cut-off. It needs re-authentication and a confirmation screen listing counts and "this cannot be undone". Only the author can run it, for themselves. The account and private space stay; shares are revoked (A-40). The operator sees only the audit entry. Deleted rows stay in backups until those age out (35 days, A-42).
+- **BR-19 residual GDPR point (R-17):** an anonymised post can still identify its author through its content, in which case it stays personal data. **FR-30 is now the primary mitigation**: the user can remove all their content before (or instead of) deleting the account. Further mitigations:
+  1. The privacy notice and terms state BR-19, shown at sign-up and again in the deletion flow, which offers FR-30 before continuing.
   2. Users can delete individual posts and comments at any time, including just before deleting their account. The deletion flow lists their posts with direct delete links (A-37).
   3. The operator handles residual erasure requests per post (hide or redact using the FR-21 tools) and logs each one.
   4. A legal check is advised.
-  A one-click "delete all my posts" on account deletion would weaken BR-19, so it is offered only if the owner approves.
 - Operator tools: data subject request log.
 
 ### 4.3 Other controls

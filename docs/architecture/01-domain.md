@@ -222,7 +222,15 @@ Detail and schema in `05-data-collector.md`.
   - ⚑ **BR-18** visibility = the post's space. There is no per-post visibility field, and the space never changes after creation. Public-space posts are readable by everyone, including visitors; club-space posts only by that club's members.
   - ⚑ Posts are created in the public space by any signed-in user, and in a club space by its admins or super admin (A-32). Signed-in users who can read a post may comment, so visitors cannot comment.
   - ⚑ An embed renders only if the viewer may read the embedded item; otherwise a placeholder is shown (BR-06, A-31).
-  - ⚑ **BR-19** On account deletion, posts and comments are **not** removed. `AnonymiseAuthor(account)` replaces `author_id` with the single platform principal `deleted_user` (A-36). Space, body and timestamps are unchanged and stay visible to the same audience (BR-18). No mapping to the former account is kept, and edit/delete rights pass to nobody. The operator can still hide content (FR-21).
+  - ⚑ **FR-30** `DeleteAllMyContent(confirmation)`, available to the author at any time, hard-deletes **all** of their posts and comments created at or before the cut-off `requested_at`. That covers the public space, every club they are in, and clubs they have left (A-43). Rules:
+    - It runs only with an explicit confirmation token issued by the confirmation screen. The screen states what will be deleted and that it cannot be undone.
+    - Only the author can run it, for themselves; the operator cannot run it on someone's behalf.
+    - Content = posts and comments only (A-38). Club documents stay (A-39). Shares of the user's private items are revoked, but the items stay (A-40).
+    - Under a deleted post, other people's comments stay readable under a "post deleted" placeholder (A-41). The post becomes a body-less **tombstone** row with no author, so the thread survives.
+    - The account and private space are untouched.
+    - Implemented as a **ContentPurge** (entity: `account_id`, `requested_at` = cut-off, status `pending` → `running` → `done`, counts). Only one purge can be active per account. Rerunning finds nothing left to delete.
+    - ⇒ `ContentPurgeRequested`, `ContentPurged(counts)`. Each deleted item raises `PostDeleted` / `CommentDeleted`, which remove notifications and search entries.
+  - ⚑ **BR-19** On account deletion, posts and comments that remain (not deleted with FR-30) are **not** removed. `AnonymiseAuthor(account)` replaces `author_id` with the single platform principal `deleted_user` (A-36). Space, body and timestamps are unchanged and stay visible to the same audience (BR-18). No mapping to the former account is kept, and edit/delete rights pass to nobody. The operator can still hide content (FR-21).
 - **ContentReport**: reporter, target, reason, status. ▶ `HideContent` by operator (FR-21).
 - Comments on club items use the same Comment entity with `target = club item`.
 
@@ -270,6 +278,7 @@ Detail and schema in `05-data-collector.md`.
 | MemberJoined/Ejected, AdminGranted/Revoked, Invited, OwnershipTransferred, ClubDeleted | Clubs | Notifications, Identity (policy cache), Social (club posts removed on ClubDeleted) |
 | ClubCompanyMarkedBought | Clubs | Notifications (optional to club) |
 | CreditToppedUp, CreditLow, CreditExhausted, UsageCharged, RefundIssued | Billing | Notifications, Tools (resume/pause builder sessions), operator metrics |
+| ContentPurgeRequested, ContentPurged, PostDeleted, CommentDeleted | Social | Notifications (remove items about deleted content, confirm purge to user), Social (shares revoked), audit log |
 | AccountDeletionRequested | Identity | all contexts (deletion saga; Billing pseudonymises) |
 
 In-process events are dispatched after commit via the outbox (`02-implementation.md` §7).
